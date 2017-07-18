@@ -1,5 +1,6 @@
 set hive.mapred.mode=nonstrict;
 set hive.explain.user=false;
+-- SORT_QUERY_RESULTS
 
 create table tnull(i int, c char(2));
 insert into tnull values(NULL, NULL), (NULL, NULL);
@@ -65,6 +66,10 @@ select * from part where (p_partkey*p_size) <> (select min(p_partkey) from part)
 -- corr, lhs contain complex expressions
 explain select count(*) as c from part as e where p_size + 100 < (select max(p_partkey) from part where p_name = e.p_name);
 select count(*) as c from part as e where p_size + 100 < (select max(p_partkey) from part where p_name = e.p_name);
+
+-- corr, lhs contain constant expressions (HIVE-16689)
+explain select count(*) as c from part as e where 100 < (select max(p_partkey) from part where p_name = e.p_name);
+select count(*) as c from part as e where 100 < (select max(p_partkey) from part where p_name = e.p_name);
 
 
 -- corr, equi-join predicate
@@ -203,4 +208,19 @@ where b.key in (select key from src where src.key > '8')
 group by key, value
 having count(*) > (select count(*) from src s1 where s1.key > '9' )
 ;
+
+-- since subquery has implicit group by this should have sq_count_check (HIVE-16793)
+explain  select * from part where p_size > (select max(p_size) from part group by p_type);
+-- same as above, for correlated columns
+explain  select * from part where p_size > (select max(p_size) from part p where p.p_type = part.p_type group by p_type);
+
+-- following queries shouldn't have a join with sq_count_check
+set hive.optimize.remove.sq_count_check = true;
+explain select key, count(*) from src group by key having count(*) >
+    (select count(*) from src s1 group by 4);
+
+explain select key, count(*) from src group by key having count(*) >
+    (select count(*) from src s1 where s1.key = '90' group by s1.key );
+
+set hive.optimize.remove.sq_count_check = false;
 

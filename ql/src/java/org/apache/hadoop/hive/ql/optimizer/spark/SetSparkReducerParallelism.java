@@ -33,6 +33,7 @@ import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.OperatorUtils;
 import org.apache.hadoop.hive.ql.exec.ReduceSinkOperator;
 import org.apache.hadoop.hive.ql.exec.TableScanOperator;
+import org.apache.hadoop.hive.ql.exec.TerminalOperator;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.exec.spark.SparkUtilities;
 import org.apache.hadoop.hive.ql.exec.spark.session.SparkSession;
@@ -47,6 +48,7 @@ import org.apache.hadoop.hive.ql.parse.spark.GenSparkUtils;
 import org.apache.hadoop.hive.ql.parse.spark.OptimizeSparkProcContext;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.ReduceSinkDesc;
+import org.apache.hadoop.hive.ql.stats.StatsUtils;
 
 /**
  * SetSparkReducerParallelism determines how many reducers should
@@ -125,7 +127,7 @@ public class SetSparkReducerParallelism implements NodeProcessor {
           for (Operator<? extends OperatorDesc> sibling
               : sink.getChildOperators().get(0).getParentOperators()) {
             if (sibling.getStatistics() != null) {
-              numberOfBytes += sibling.getStatistics().getDataSize();
+              numberOfBytes = StatsUtils.safeAdd(numberOfBytes, sibling.getStatistics().getDataSize());
               if (LOG.isDebugEnabled()) {
                 LOG.debug("Sibling " + sibling + " has stats: " + sibling.getStatistics());
               }
@@ -142,7 +144,7 @@ public class SetSparkReducerParallelism implements NodeProcessor {
                 OperatorUtils.findOperatorsUpstream(sibling, TableScanOperator.class);
             for (TableScanOperator source : sources) {
               if (source.getStatistics() != null) {
-                numberOfBytes += source.getStatistics().getDataSize();
+                numberOfBytes = StatsUtils.safeAdd(numberOfBytes, source.getStatistics().getDataSize());
                 if (LOG.isDebugEnabled()) {
                   LOG.debug("Table source " + source + " has stats: " + source.getStatistics());
                 }
@@ -202,20 +204,33 @@ public class SetSparkReducerParallelism implements NodeProcessor {
     }
     if (desc.getNumReducers() == 1 && desc.hasOrderBy() &&
         hiveConf.getBoolVar(HiveConf.ConfVars.HIVESAMPLINGFORORDERBY) && !desc.isDeduplicated()) {
+      Stack<Operator<? extends OperatorDesc>> descendants = new Stack<Operator<? extends OperatorDesc>>();
       List<Operator<? extends OperatorDesc>> children = reduceSink.getChildOperators();
-      while (children != null && children.size() > 0) {
-        if (children.size() != 1 || children.get(0) instanceof LimitOperator) {
+      if (children != null) {
+        for (Operator<? extends OperatorDesc> child : children) {
+          descendants.push(child);
+        }
+      }
+      while (descendants.size() != 0) {
+        Operator<? extends OperatorDesc> descendant = descendants.pop();
+        //If the decendants contains LimitOperator,return false
+        if (descendant instanceof LimitOperator) {
           return false;
         }
-        if (children.get(0) instanceof ReduceSinkOperator ||
-            children.get(0) instanceof FileSinkOperator) {
-          break;
+        boolean reachTerminalOperator = (descendant instanceof TerminalOperator);
+        if (!reachTerminalOperator) {
+          List<Operator<? extends OperatorDesc>> childrenOfDescendant = descendant.getChildOperators();
+          if (childrenOfDescendant != null) {
+            for (Operator<? extends OperatorDesc> childOfDescendant : childrenOfDescendant) {
+              descendants.push(childOfDescendant);
+            }
+          }
         }
-        children = children.get(0).getChildOperators();
       }
       return true;
     }
     return false;
+
   }
 
   private void getSparkMemoryAndCores(OptimizeSparkProcContext context) throws SemanticException {

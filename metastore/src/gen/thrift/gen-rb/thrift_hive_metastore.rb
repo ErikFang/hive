@@ -318,13 +318,13 @@ module ThriftHiveMetastore
       return
     end
 
-    def create_table_with_constraints(tbl, primaryKeys, foreignKeys)
-      send_create_table_with_constraints(tbl, primaryKeys, foreignKeys)
+    def create_table_with_constraints(tbl, primaryKeys, foreignKeys, uniqueConstraints, notNullConstraints)
+      send_create_table_with_constraints(tbl, primaryKeys, foreignKeys, uniqueConstraints, notNullConstraints)
       recv_create_table_with_constraints()
     end
 
-    def send_create_table_with_constraints(tbl, primaryKeys, foreignKeys)
-      send_message('create_table_with_constraints', Create_table_with_constraints_args, :tbl => tbl, :primaryKeys => primaryKeys, :foreignKeys => foreignKeys)
+    def send_create_table_with_constraints(tbl, primaryKeys, foreignKeys, uniqueConstraints, notNullConstraints)
+      send_message('create_table_with_constraints', Create_table_with_constraints_args, :tbl => tbl, :primaryKeys => primaryKeys, :foreignKeys => foreignKeys, :uniqueConstraints => uniqueConstraints, :notNullConstraints => notNullConstraints)
     end
 
     def recv_create_table_with_constraints()
@@ -384,6 +384,38 @@ module ThriftHiveMetastore
       return
     end
 
+    def add_unique_constraint(req)
+      send_add_unique_constraint(req)
+      recv_add_unique_constraint()
+    end
+
+    def send_add_unique_constraint(req)
+      send_message('add_unique_constraint', Add_unique_constraint_args, :req => req)
+    end
+
+    def recv_add_unique_constraint()
+      result = receive_message(Add_unique_constraint_result)
+      raise result.o1 unless result.o1.nil?
+      raise result.o2 unless result.o2.nil?
+      return
+    end
+
+    def add_not_null_constraint(req)
+      send_add_not_null_constraint(req)
+      recv_add_not_null_constraint()
+    end
+
+    def send_add_not_null_constraint(req)
+      send_message('add_not_null_constraint', Add_not_null_constraint_args, :req => req)
+    end
+
+    def recv_add_not_null_constraint()
+      result = receive_message(Add_not_null_constraint_result)
+      raise result.o1 unless result.o1.nil?
+      raise result.o2 unless result.o2.nil?
+      return
+    end
+
     def drop_table(dbname, name, deleteData)
       send_drop_table(dbname, name, deleteData)
       recv_drop_table()
@@ -413,6 +445,21 @@ module ThriftHiveMetastore
       result = receive_message(Drop_table_with_environment_context_result)
       raise result.o1 unless result.o1.nil?
       raise result.o3 unless result.o3.nil?
+      return
+    end
+
+    def truncate_table(dbName, tableName, partNames)
+      send_truncate_table(dbName, tableName, partNames)
+      recv_truncate_table()
+    end
+
+    def send_truncate_table(dbName, tableName, partNames)
+      send_message('truncate_table', Truncate_table_args, :dbName => dbName, :tableName => tableName, :partNames => partNames)
+    end
+
+    def recv_truncate_table()
+      result = receive_message(Truncate_table_result)
+      raise result.o1 unless result.o1.nil?
       return
     end
 
@@ -1472,6 +1519,40 @@ module ThriftHiveMetastore
       raise ::Thrift::ApplicationException.new(::Thrift::ApplicationException::MISSING_RESULT, 'get_foreign_keys failed: unknown result')
     end
 
+    def get_unique_constraints(request)
+      send_get_unique_constraints(request)
+      return recv_get_unique_constraints()
+    end
+
+    def send_get_unique_constraints(request)
+      send_message('get_unique_constraints', Get_unique_constraints_args, :request => request)
+    end
+
+    def recv_get_unique_constraints()
+      result = receive_message(Get_unique_constraints_result)
+      return result.success unless result.success.nil?
+      raise result.o1 unless result.o1.nil?
+      raise result.o2 unless result.o2.nil?
+      raise ::Thrift::ApplicationException.new(::Thrift::ApplicationException::MISSING_RESULT, 'get_unique_constraints failed: unknown result')
+    end
+
+    def get_not_null_constraints(request)
+      send_get_not_null_constraints(request)
+      return recv_get_not_null_constraints()
+    end
+
+    def send_get_not_null_constraints(request)
+      send_message('get_not_null_constraints', Get_not_null_constraints_args, :request => request)
+    end
+
+    def recv_get_not_null_constraints()
+      result = receive_message(Get_not_null_constraints_result)
+      return result.success unless result.success.nil?
+      raise result.o1 unless result.o1.nil?
+      raise result.o2 unless result.o2.nil?
+      raise ::Thrift::ApplicationException.new(::Thrift::ApplicationException::MISSING_RESULT, 'get_not_null_constraints failed: unknown result')
+    end
+
     def update_table_column_statistics(stats_obj)
       send_update_table_column_statistics(stats_obj)
       return recv_update_table_column_statistics()
@@ -2472,6 +2553,22 @@ module ThriftHiveMetastore
       return
     end
 
+    def cm_recycle(request)
+      send_cm_recycle(request)
+      return recv_cm_recycle()
+    end
+
+    def send_cm_recycle(request)
+      send_message('cm_recycle', Cm_recycle_args, :request => request)
+    end
+
+    def recv_cm_recycle()
+      result = receive_message(Cm_recycle_result)
+      return result.success unless result.success.nil?
+      raise result.o1 unless result.o1.nil?
+      raise ::Thrift::ApplicationException.new(::Thrift::ApplicationException::MISSING_RESULT, 'cm_recycle failed: unknown result')
+    end
+
     def get_file_metadata_by_expr(req)
       send_get_file_metadata_by_expr(req)
       return recv_get_file_metadata_by_expr()
@@ -2545,6 +2642,22 @@ module ThriftHiveMetastore
       result = receive_message(Cache_file_metadata_result)
       return result.success unless result.success.nil?
       raise ::Thrift::ApplicationException.new(::Thrift::ApplicationException::MISSING_RESULT, 'cache_file_metadata failed: unknown result')
+    end
+
+    def get_metastore_db_uuid()
+      send_get_metastore_db_uuid()
+      return recv_get_metastore_db_uuid()
+    end
+
+    def send_get_metastore_db_uuid()
+      send_message('get_metastore_db_uuid', Get_metastore_db_uuid_args)
+    end
+
+    def recv_get_metastore_db_uuid()
+      result = receive_message(Get_metastore_db_uuid_result)
+      return result.success unless result.success.nil?
+      raise result.o1 unless result.o1.nil?
+      raise ::Thrift::ApplicationException.new(::Thrift::ApplicationException::MISSING_RESULT, 'get_metastore_db_uuid failed: unknown result')
     end
 
   end
@@ -2802,7 +2915,7 @@ module ThriftHiveMetastore
       args = read_args(iprot, Create_table_with_constraints_args)
       result = Create_table_with_constraints_result.new()
       begin
-        @handler.create_table_with_constraints(args.tbl, args.primaryKeys, args.foreignKeys)
+        @handler.create_table_with_constraints(args.tbl, args.primaryKeys, args.foreignKeys, args.uniqueConstraints, args.notNullConstraints)
       rescue ::AlreadyExistsException => o1
         result.o1 = o1
       rescue ::InvalidObjectException => o2
@@ -2854,6 +2967,32 @@ module ThriftHiveMetastore
       write_result(result, oprot, 'add_foreign_key', seqid)
     end
 
+    def process_add_unique_constraint(seqid, iprot, oprot)
+      args = read_args(iprot, Add_unique_constraint_args)
+      result = Add_unique_constraint_result.new()
+      begin
+        @handler.add_unique_constraint(args.req)
+      rescue ::NoSuchObjectException => o1
+        result.o1 = o1
+      rescue ::MetaException => o2
+        result.o2 = o2
+      end
+      write_result(result, oprot, 'add_unique_constraint', seqid)
+    end
+
+    def process_add_not_null_constraint(seqid, iprot, oprot)
+      args = read_args(iprot, Add_not_null_constraint_args)
+      result = Add_not_null_constraint_result.new()
+      begin
+        @handler.add_not_null_constraint(args.req)
+      rescue ::NoSuchObjectException => o1
+        result.o1 = o1
+      rescue ::MetaException => o2
+        result.o2 = o2
+      end
+      write_result(result, oprot, 'add_not_null_constraint', seqid)
+    end
+
     def process_drop_table(seqid, iprot, oprot)
       args = read_args(iprot, Drop_table_args)
       result = Drop_table_result.new()
@@ -2878,6 +3017,17 @@ module ThriftHiveMetastore
         result.o3 = o3
       end
       write_result(result, oprot, 'drop_table_with_environment_context', seqid)
+    end
+
+    def process_truncate_table(seqid, iprot, oprot)
+      args = read_args(iprot, Truncate_table_args)
+      result = Truncate_table_result.new()
+      begin
+        @handler.truncate_table(args.dbName, args.tableName, args.partNames)
+      rescue ::MetaException => o1
+        result.o1 = o1
+      end
+      write_result(result, oprot, 'truncate_table', seqid)
     end
 
     def process_get_tables(seqid, iprot, oprot)
@@ -3708,6 +3858,32 @@ module ThriftHiveMetastore
       write_result(result, oprot, 'get_foreign_keys', seqid)
     end
 
+    def process_get_unique_constraints(seqid, iprot, oprot)
+      args = read_args(iprot, Get_unique_constraints_args)
+      result = Get_unique_constraints_result.new()
+      begin
+        result.success = @handler.get_unique_constraints(args.request)
+      rescue ::MetaException => o1
+        result.o1 = o1
+      rescue ::NoSuchObjectException => o2
+        result.o2 = o2
+      end
+      write_result(result, oprot, 'get_unique_constraints', seqid)
+    end
+
+    def process_get_not_null_constraints(seqid, iprot, oprot)
+      args = read_args(iprot, Get_not_null_constraints_args)
+      result = Get_not_null_constraints_result.new()
+      begin
+        result.success = @handler.get_not_null_constraints(args.request)
+      rescue ::MetaException => o1
+        result.o1 = o1
+      rescue ::NoSuchObjectException => o2
+        result.o2 = o2
+      end
+      write_result(result, oprot, 'get_not_null_constraints', seqid)
+    end
+
     def process_update_table_column_statistics(seqid, iprot, oprot)
       args = read_args(iprot, Update_table_column_statistics_args)
       result = Update_table_column_statistics_result.new()
@@ -4396,6 +4572,17 @@ module ThriftHiveMetastore
       write_result(result, oprot, 'flushCache', seqid)
     end
 
+    def process_cm_recycle(seqid, iprot, oprot)
+      args = read_args(iprot, Cm_recycle_args)
+      result = Cm_recycle_result.new()
+      begin
+        result.success = @handler.cm_recycle(args.request)
+      rescue ::MetaException => o1
+        result.o1 = o1
+      end
+      write_result(result, oprot, 'cm_recycle', seqid)
+    end
+
     def process_get_file_metadata_by_expr(seqid, iprot, oprot)
       args = read_args(iprot, Get_file_metadata_by_expr_args)
       result = Get_file_metadata_by_expr_result.new()
@@ -4429,6 +4616,17 @@ module ThriftHiveMetastore
       result = Cache_file_metadata_result.new()
       result.success = @handler.cache_file_metadata(args.req)
       write_result(result, oprot, 'cache_file_metadata', seqid)
+    end
+
+    def process_get_metastore_db_uuid(seqid, iprot, oprot)
+      args = read_args(iprot, Get_metastore_db_uuid_args)
+      result = Get_metastore_db_uuid_result.new()
+      begin
+        result.success = @handler.get_metastore_db_uuid()
+      rescue ::MetaException => o1
+        result.o1 = o1
+      end
+      write_result(result, oprot, 'get_metastore_db_uuid', seqid)
     end
 
   end
@@ -5109,11 +5307,15 @@ module ThriftHiveMetastore
     TBL = 1
     PRIMARYKEYS = 2
     FOREIGNKEYS = 3
+    UNIQUECONSTRAINTS = 4
+    NOTNULLCONSTRAINTS = 5
 
     FIELDS = {
       TBL => {:type => ::Thrift::Types::STRUCT, :name => 'tbl', :class => ::Table},
       PRIMARYKEYS => {:type => ::Thrift::Types::LIST, :name => 'primaryKeys', :element => {:type => ::Thrift::Types::STRUCT, :class => ::SQLPrimaryKey}},
-      FOREIGNKEYS => {:type => ::Thrift::Types::LIST, :name => 'foreignKeys', :element => {:type => ::Thrift::Types::STRUCT, :class => ::SQLForeignKey}}
+      FOREIGNKEYS => {:type => ::Thrift::Types::LIST, :name => 'foreignKeys', :element => {:type => ::Thrift::Types::STRUCT, :class => ::SQLForeignKey}},
+      UNIQUECONSTRAINTS => {:type => ::Thrift::Types::LIST, :name => 'uniqueConstraints', :element => {:type => ::Thrift::Types::STRUCT, :class => ::SQLUniqueConstraint}},
+      NOTNULLCONSTRAINTS => {:type => ::Thrift::Types::LIST, :name => 'notNullConstraints', :element => {:type => ::Thrift::Types::STRUCT, :class => ::SQLNotNullConstraint}}
     }
 
     def struct_fields; FIELDS; end
@@ -5248,6 +5450,74 @@ module ThriftHiveMetastore
     ::Thrift::Struct.generate_accessors self
   end
 
+  class Add_unique_constraint_args
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    REQ = 1
+
+    FIELDS = {
+      REQ => {:type => ::Thrift::Types::STRUCT, :name => 'req', :class => ::AddUniqueConstraintRequest}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
+  class Add_unique_constraint_result
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    O1 = 1
+    O2 = 2
+
+    FIELDS = {
+      O1 => {:type => ::Thrift::Types::STRUCT, :name => 'o1', :class => ::NoSuchObjectException},
+      O2 => {:type => ::Thrift::Types::STRUCT, :name => 'o2', :class => ::MetaException}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
+  class Add_not_null_constraint_args
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    REQ = 1
+
+    FIELDS = {
+      REQ => {:type => ::Thrift::Types::STRUCT, :name => 'req', :class => ::AddNotNullConstraintRequest}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
+  class Add_not_null_constraint_result
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    O1 = 1
+    O2 = 2
+
+    FIELDS = {
+      O1 => {:type => ::Thrift::Types::STRUCT, :name => 'o1', :class => ::NoSuchObjectException},
+      O2 => {:type => ::Thrift::Types::STRUCT, :name => 'o2', :class => ::MetaException}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
   class Drop_table_args
     include ::Thrift::Struct, ::Thrift::Struct_Union
     DBNAME = 1
@@ -5316,6 +5586,42 @@ module ThriftHiveMetastore
     FIELDS = {
       O1 => {:type => ::Thrift::Types::STRUCT, :name => 'o1', :class => ::NoSuchObjectException},
       O3 => {:type => ::Thrift::Types::STRUCT, :name => 'o3', :class => ::MetaException}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
+  class Truncate_table_args
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    DBNAME = 1
+    TABLENAME = 2
+    PARTNAMES = 3
+
+    FIELDS = {
+      DBNAME => {:type => ::Thrift::Types::STRING, :name => 'dbName'},
+      TABLENAME => {:type => ::Thrift::Types::STRING, :name => 'tableName'},
+      PARTNAMES => {:type => ::Thrift::Types::LIST, :name => 'partNames', :element => {:type => ::Thrift::Types::STRING}}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
+  class Truncate_table_result
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    O1 = 1
+
+    FIELDS = {
+      O1 => {:type => ::Thrift::Types::STRUCT, :name => 'o1', :class => ::MetaException}
     }
 
     def struct_fields; FIELDS; end
@@ -7814,6 +8120,78 @@ module ThriftHiveMetastore
     ::Thrift::Struct.generate_accessors self
   end
 
+  class Get_unique_constraints_args
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    REQUEST = 1
+
+    FIELDS = {
+      REQUEST => {:type => ::Thrift::Types::STRUCT, :name => 'request', :class => ::UniqueConstraintsRequest}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
+  class Get_unique_constraints_result
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    SUCCESS = 0
+    O1 = 1
+    O2 = 2
+
+    FIELDS = {
+      SUCCESS => {:type => ::Thrift::Types::STRUCT, :name => 'success', :class => ::UniqueConstraintsResponse},
+      O1 => {:type => ::Thrift::Types::STRUCT, :name => 'o1', :class => ::MetaException},
+      O2 => {:type => ::Thrift::Types::STRUCT, :name => 'o2', :class => ::NoSuchObjectException}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
+  class Get_not_null_constraints_args
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    REQUEST = 1
+
+    FIELDS = {
+      REQUEST => {:type => ::Thrift::Types::STRUCT, :name => 'request', :class => ::NotNullConstraintsRequest}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
+  class Get_not_null_constraints_result
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    SUCCESS = 0
+    O1 = 1
+    O2 = 2
+
+    FIELDS = {
+      SUCCESS => {:type => ::Thrift::Types::STRUCT, :name => 'success', :class => ::NotNullConstraintsResponse},
+      O1 => {:type => ::Thrift::Types::STRUCT, :name => 'o1', :class => ::MetaException},
+      O2 => {:type => ::Thrift::Types::STRUCT, :name => 'o2', :class => ::NoSuchObjectException}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
   class Update_table_column_statistics_args
     include ::Thrift::Struct, ::Thrift::Struct_Union
     STATS_OBJ = 1
@@ -10009,6 +10387,40 @@ module ThriftHiveMetastore
     ::Thrift::Struct.generate_accessors self
   end
 
+  class Cm_recycle_args
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    REQUEST = 1
+
+    FIELDS = {
+      REQUEST => {:type => ::Thrift::Types::STRUCT, :name => 'request', :class => ::CmRecycleRequest}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
+  class Cm_recycle_result
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    SUCCESS = 0
+    O1 = 1
+
+    FIELDS = {
+      SUCCESS => {:type => ::Thrift::Types::STRUCT, :name => 'success', :class => ::CmRecycleResponse},
+      O1 => {:type => ::Thrift::Types::STRUCT, :name => 'o1', :class => ::MetaException}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
   class Get_file_metadata_by_expr_args
     include ::Thrift::Struct, ::Thrift::Struct_Union
     REQ = 1
@@ -10159,6 +10571,39 @@ module ThriftHiveMetastore
 
     FIELDS = {
       SUCCESS => {:type => ::Thrift::Types::STRUCT, :name => 'success', :class => ::CacheFileMetadataResult}
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
+  class Get_metastore_db_uuid_args
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+
+    FIELDS = {
+
+    }
+
+    def struct_fields; FIELDS; end
+
+    def validate
+    end
+
+    ::Thrift::Struct.generate_accessors self
+  end
+
+  class Get_metastore_db_uuid_result
+    include ::Thrift::Struct, ::Thrift::Struct_Union
+    SUCCESS = 0
+    O1 = 1
+
+    FIELDS = {
+      SUCCESS => {:type => ::Thrift::Types::STRING, :name => 'success'},
+      O1 => {:type => ::Thrift::Types::STRUCT, :name => 'o1', :class => ::MetaException}
     }
 
     def struct_fields; FIELDS; end

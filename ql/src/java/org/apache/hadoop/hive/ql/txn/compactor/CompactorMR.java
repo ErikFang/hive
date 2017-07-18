@@ -233,7 +233,7 @@ public class CompactorMR {
         launchCompactionJob(jobMinorCompact,
           null, CompactionType.MINOR, null,
           parsedDeltas.subList(jobSubId * maxDeltastoHandle, (jobSubId + 1) * maxDeltastoHandle),
-          maxDeltastoHandle, -1, conf, txnHandler, ci.id);
+          maxDeltastoHandle, -1, conf, txnHandler, ci.id, jobName);
       }
       //now recompute state since we've done minor compactions and have different 'best' set of deltas
       dir = AcidUtils.getAcidState(new Path(sd.getLocation()), conf, txns);
@@ -251,6 +251,7 @@ public class CompactorMR {
           // There are original format files
           for (HdfsFileStatusWithId stat : originalFiles) {
             Path path = stat.getFileStatus().getPath();
+            //note that originalFiles are all original files recursively not dirs
             dirsToSearch.add(path);
             LOG.debug("Adding original file " + path + " to dirs to search");
           }
@@ -264,22 +265,28 @@ public class CompactorMR {
       }
     }
 
-    if (parsedDeltas.size() == 0 && dir.getOriginalFiles() == null) {
+    if (parsedDeltas.size() == 0 && dir.getOriginalFiles().size() == 0) {
       // Skip compaction if there's no delta files AND there's no original files
       LOG.error("No delta files or original files found to compact in " + sd.getLocation() + " for compactionId=" + ci.id);
       return;
     }
 
     launchCompactionJob(job, baseDir, ci.type, dirsToSearch, dir.getCurrentDirectories(),
-      dir.getCurrentDirectories().size(), dir.getObsolete().size(), conf, txnHandler, ci.id);
+      dir.getCurrentDirectories().size(), dir.getObsolete().size(), conf, txnHandler, ci.id, jobName);
 
     su.gatherStats();
   }
+
+  /**
+   * @param baseDir if not null, it's either table/partition root folder or base_xxxx.  
+   *                If it's base_xxxx, it's in dirsToSearch, else the actual original files
+   *                (all leaves recursively) are in the dirsToSearch list
+   */
   private void launchCompactionJob(JobConf job, Path baseDir, CompactionType compactionType,
                                    StringableList dirsToSearch,
                                    List<AcidUtils.ParsedDelta> parsedDeltas,
                                    int curDirNumber, int obsoleteDirNumber, HiveConf hiveConf,
-                                   TxnStore txnHandler, long id) throws IOException {
+                                   TxnStore txnHandler, long id, String jobName) throws IOException {
     job.setBoolean(IS_MAJOR, compactionType == CompactionType.MAJOR);
     if(dirsToSearch == null) {
       dirsToSearch = new StringableList();
@@ -313,6 +320,10 @@ public class CompactorMR {
     LOG.info("Submitted compaction job '" + job.getJobName() + "' with jobID=" + rj.getID() + " compaction ID=" + id);
     txnHandler.setHadoopJobId(rj.getID().toString(), id);
     rj.waitForCompletion();
+    if (!rj.isSuccessful()) {
+      throw new IOException(compactionType == CompactionType.MAJOR ? "Major" : "Minor" +
+          " compactor job failed for " + jobName + "! Hadoop JobId: " + rj.getID() );
+    }
   }
   /**
    * Set the column names and types into the job conf for the input format
@@ -359,7 +370,7 @@ public class CompactorMR {
      * @param hadoopConf
      * @param bucket bucket to be processed by this split
      * @param files actual files this split should process.  It is assumed the caller has already
-     *              parsed out the files in base and deltas to populate this list.
+     *              parsed out the files in base and deltas to populate this list.  Includes copy_N
      * @param base directory of the base, or the partition/table location if the files are in old
      *             style.  Can be null.
      * @param deltas directories of the delta files.

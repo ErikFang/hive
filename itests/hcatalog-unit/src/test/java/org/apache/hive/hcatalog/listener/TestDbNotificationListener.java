@@ -31,13 +31,16 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Stack;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.cli.CliSessionState;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
+import org.apache.hadoop.hive.metastore.MetaStoreEventListener;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.FireEventRequest;
@@ -46,6 +49,7 @@ import org.apache.hadoop.hive.metastore.api.Function;
 import org.apache.hadoop.hive.metastore.api.FunctionType;
 import org.apache.hadoop.hive.metastore.api.Index;
 import org.apache.hadoop.hive.metastore.api.InsertEventRequestData;
+import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NotificationEvent;
 import org.apache.hadoop.hive.metastore.api.NotificationEventResponse;
 import org.apache.hadoop.hive.metastore.api.Order;
@@ -56,6 +60,21 @@ import org.apache.hadoop.hive.metastore.api.ResourceUri;
 import org.apache.hadoop.hive.metastore.api.SerDeInfo;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.events.AddIndexEvent;
+import org.apache.hadoop.hive.metastore.events.AddPartitionEvent;
+import org.apache.hadoop.hive.metastore.events.AlterIndexEvent;
+import org.apache.hadoop.hive.metastore.events.AlterPartitionEvent;
+import org.apache.hadoop.hive.metastore.events.AlterTableEvent;
+import org.apache.hadoop.hive.metastore.events.CreateDatabaseEvent;
+import org.apache.hadoop.hive.metastore.events.CreateFunctionEvent;
+import org.apache.hadoop.hive.metastore.events.CreateTableEvent;
+import org.apache.hadoop.hive.metastore.events.DropDatabaseEvent;
+import org.apache.hadoop.hive.metastore.events.DropFunctionEvent;
+import org.apache.hadoop.hive.metastore.events.DropIndexEvent;
+import org.apache.hadoop.hive.metastore.events.DropPartitionEvent;
+import org.apache.hadoop.hive.metastore.events.DropTableEvent;
+import org.apache.hadoop.hive.metastore.events.InsertEvent;
+import org.apache.hadoop.hive.metastore.events.ListenerEvent;
 import org.apache.hadoop.hive.metastore.messaging.AddPartitionMessage;
 import org.apache.hadoop.hive.metastore.messaging.AlterIndexMessage;
 import org.apache.hadoop.hive.metastore.messaging.AlterPartitionMessage;
@@ -75,9 +94,14 @@ import org.apache.hadoop.hive.metastore.messaging.MessageDeserializer;
 import org.apache.hadoop.hive.metastore.messaging.MessageFactory;
 import org.apache.hadoop.hive.ql.Driver;
 import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.hive.hcatalog.api.repl.ReplicationV1CompatRule;
+import org.apache.hive.hcatalog.data.Pair;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TestRule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -97,12 +121,119 @@ public class TestDbNotificationListener {
   private int startTime;
   private long firstEventId;
 
+  private static List<String> testsToSkipForReplV1BackwardCompatTesting =
+      new ArrayList<>(Arrays.asList("cleanupNotifs", "sqlTempTable"));
+  // Make sure we skip backward-compat checking for those tests that don't generate events
+
+  private static ReplicationV1CompatRule bcompat = null;
+
+  @Rule
+  public TestRule replV1BackwardCompatibleRule = bcompat;
+  // Note - above looks funny because it seems like we're instantiating a static var, and
+  // then a non-static var as the rule, but the reason this is required is because Rules
+  // are not allowed to be static, but we wind up needing it initialized from a static
+  // context. So, bcompat is initialzed in a static context, but this rule is initialized
+  // before the tests run, and will pick up an initialized value of bcompat.
+
+  /* This class is used to verify that HiveMetaStore calls the non-transactional listeners with the
+    * current event ID set by the DbNotificationListener class */
+  public static class MockMetaStoreEventListener extends MetaStoreEventListener {
+    private static Stack<Pair<EventType, String>> eventsIds = new Stack<>();
+
+    private static void pushEventId(EventType eventType, final ListenerEvent event) {
+      if (event.getStatus()) {
+        Map<String, String> parameters = event.getParameters();
+        if (parameters.containsKey(MetaStoreEventListenerConstants.DB_NOTIFICATION_EVENT_ID_KEY_NAME)) {
+          Pair<EventType, String> pair =
+              new Pair<>(eventType, parameters.get(MetaStoreEventListenerConstants.DB_NOTIFICATION_EVENT_ID_KEY_NAME));
+          eventsIds.push(pair);
+        }
+      }
+    }
+
+    public static void popAndVerifyLastEventId(EventType eventType, long id) {
+      if (!eventsIds.isEmpty()) {
+        Pair<EventType, String> pair = eventsIds.pop();
+
+        assertEquals("Last event type does not match.", eventType, pair.first);
+        assertEquals("Last event ID does not match.", Long.toString(id), pair.second);
+      } else {
+        assertTrue("List of events is empty.",false);
+      }
+    }
+
+    public static void clearEvents() {
+      eventsIds.clear();
+    }
+
+    public MockMetaStoreEventListener(Configuration config) {
+      super(config);
+    }
+
+    public void onCreateTable (CreateTableEvent tableEvent) throws MetaException {
+      pushEventId(EventType.CREATE_TABLE, tableEvent);
+    }
+
+    public void onDropTable (DropTableEvent tableEvent)  throws MetaException {
+      pushEventId(EventType.DROP_TABLE, tableEvent);
+    }
+
+    public void onAlterTable (AlterTableEvent tableEvent) throws MetaException {
+      pushEventId(EventType.ALTER_TABLE, tableEvent);
+    }
+
+    public void onAddPartition (AddPartitionEvent partitionEvent) throws MetaException {
+      pushEventId(EventType.ADD_PARTITION, partitionEvent);
+    }
+
+    public void onDropPartition (DropPartitionEvent partitionEvent)  throws MetaException {
+      pushEventId(EventType.DROP_PARTITION, partitionEvent);
+    }
+
+    public void onAlterPartition (AlterPartitionEvent partitionEvent)  throws MetaException {
+      pushEventId(EventType.ALTER_PARTITION, partitionEvent);
+    }
+
+    public void onCreateDatabase (CreateDatabaseEvent dbEvent) throws MetaException {
+      pushEventId(EventType.CREATE_DATABASE, dbEvent);
+    }
+
+    public void onDropDatabase (DropDatabaseEvent dbEvent) throws MetaException {
+      pushEventId(EventType.DROP_DATABASE, dbEvent);
+    }
+
+    public void onAddIndex(AddIndexEvent indexEvent) throws MetaException {
+      pushEventId(EventType.CREATE_INDEX, indexEvent);
+    }
+
+    public void onDropIndex(DropIndexEvent indexEvent) throws MetaException {
+      pushEventId(EventType.DROP_INDEX, indexEvent);
+    }
+
+    public void onAlterIndex(AlterIndexEvent indexEvent) throws MetaException {
+      pushEventId(EventType.ALTER_INDEX, indexEvent);
+    }
+
+    public void onCreateFunction (CreateFunctionEvent fnEvent) throws MetaException {
+      pushEventId(EventType.CREATE_FUNCTION, fnEvent);
+    }
+
+    public void onDropFunction (DropFunctionEvent fnEvent) throws MetaException {
+      pushEventId(EventType.DROP_FUNCTION, fnEvent);
+    }
+
+    public void onInsert(InsertEvent insertEvent) throws MetaException {
+      pushEventId(EventType.INSERT, insertEvent);
+    }
+  }
+
   @SuppressWarnings("rawtypes")
   @BeforeClass
   public static void connectToMetastore() throws Exception {
     HiveConf conf = new HiveConf();
     conf.setVar(HiveConf.ConfVars.METASTORE_TRANSACTIONAL_EVENT_LISTENERS,
         DbNotificationListener.class.getName());
+    conf.setVar(HiveConf.ConfVars.METASTORE_EVENT_LISTENERS, MockMetaStoreEventListener.class.getName());
     conf.setVar(HiveConf.ConfVars.METASTORE_EVENT_DB_LISTENER_TTL, String.valueOf(EVENTS_TTL) + "s");
     conf.setBoolVar(HiveConf.ConfVars.HIVE_SUPPORT_CONCURRENCY, false);
     conf.setBoolVar(HiveConf.ConfVars.FIRE_EVENTS_FOR_DML, true);
@@ -124,6 +255,8 @@ public class TestDbNotificationListener {
     msClient = new HiveMetaStoreClient(conf);
     driver = new Driver(conf);
     md = MessageFactory.getInstance().getDeserializer();
+
+    bcompat = new ReplicationV1CompatRule(msClient, conf, testsToSkipForReplV1BackwardCompatTesting );
   }
 
   @Before
@@ -138,6 +271,12 @@ public class TestDbNotificationListener {
     firstEventId = msClient.getCurrentNotificationEventId().getEventId();
     DummyRawStoreFailEvent.setEventSucceed(true);
   }
+
+  @After
+  public void tearDown() {
+    MockMetaStoreEventListener.clearEvents();
+  }
+
 
   @Test
   public void createDatabase() throws Exception {
@@ -163,6 +302,9 @@ public class TestDbNotificationListener {
     // Parse the message field
     CreateDatabaseMessage createDbMsg = md.getCreateDatabaseMessage(event.getMessage());
     assertEquals(dbName, createDbMsg.getDB());
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_DATABASE, firstEventId + 1);
 
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
@@ -205,6 +347,10 @@ public class TestDbNotificationListener {
     // Parse the message field
     DropDatabaseMessage dropDbMsg = md.getDropDatabaseMessage(event.getMessage());
     assertEquals(dbName, dropDbMsg.getDB());
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.DROP_DATABASE, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_DATABASE, firstEventId + 1);
 
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
@@ -255,6 +401,9 @@ public class TestDbNotificationListener {
     assertEquals(defaultDbName, createTblMsg.getDB());
     assertEquals(tblName, createTblMsg.getTable());
     assertEquals(table, createTblMsg.getTableObj());
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
 
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
@@ -312,6 +461,9 @@ public class TestDbNotificationListener {
     AlterTableMessage alterTableMessage = md.getAlterTableMessage(event.getMessage());
     assertEquals(table, alterTableMessage.getTableObjAfter());
 
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
+
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
     DummyRawStoreFailEvent.setEventSucceed(false);
@@ -362,6 +514,10 @@ public class TestDbNotificationListener {
     DropTableMessage dropTblMsg = md.getDropTableMessage(event.getMessage());
     assertEquals(defaultDbName, dropTblMsg.getDB());
     assertEquals(tblName, dropTblMsg.getTable());
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.DROP_TABLE, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
 
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
@@ -427,6 +583,10 @@ public class TestDbNotificationListener {
     Iterator<Partition> ptnIter = addPtnMsg.getPartitionObjs().iterator();
     assertTrue(ptnIter.hasNext());
     assertEquals(partition, ptnIter.next());
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.ADD_PARTITION, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
 
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
@@ -494,6 +654,10 @@ public class TestDbNotificationListener {
     assertEquals(tblName, alterPtnMsg.getTable());
     assertEquals(newPart, alterPtnMsg.getPtnObjAfter());
 
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.ADD_PARTITION, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
+
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
     DummyRawStoreFailEvent.setEventSucceed(false);
@@ -556,6 +720,11 @@ public class TestDbNotificationListener {
     assertEquals(table.getDbName(), tableObj.getDbName());
     assertEquals(table.getTableName(), tableObj.getTableName());
     assertEquals(table.getOwner(), tableObj.getOwner());
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.DROP_PARTITION, firstEventId + 3);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.ADD_PARTITION, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
 
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
@@ -653,6 +822,13 @@ public class TestDbNotificationListener {
     Iterator<Map<String, String>> parts = dropPtnMsg.getPartitions().iterator();
     assertTrue(parts.hasNext());
     assertEquals(part1.getValues(), Lists.newArrayList(parts.next().values()));
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.DROP_PARTITION, firstEventId + 5);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.ADD_PARTITION, firstEventId + 4);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.ADD_PARTITION, firstEventId + 3);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
   }
 
   @Test
@@ -692,6 +868,9 @@ public class TestDbNotificationListener {
     assertEquals(1, funcObj.getResourceUrisSize());
     assertEquals(ResourceType.JAR, funcObj.getResourceUris().get(0).getResourceType());
     assertEquals(funcResource, funcObj.getResourceUris().get(0).getUri());
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_FUNCTION, firstEventId + 1);
 
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
@@ -741,6 +920,10 @@ public class TestDbNotificationListener {
     DropFunctionMessage dropFuncMsg = md.getDropFunctionMessage(event.getMessage());
     assertEquals(defaultDbName, dropFuncMsg.getDB());
     assertEquals(funcName, dropFuncMsg.getFunctionName());
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.DROP_FUNCTION, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_FUNCTION, firstEventId + 1);
 
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
@@ -807,6 +990,11 @@ public class TestDbNotificationListener {
     assertEquals(tableName, indexObj.getOrigTableName());
     assertEquals(indexTableName, indexObj.getIndexTableName());
 
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_INDEX, firstEventId + 3);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
+
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
     DummyRawStoreFailEvent.setEventSucceed(false);
@@ -872,6 +1060,12 @@ public class TestDbNotificationListener {
     assertEquals(indexName.toLowerCase(), dropIdxMsg.getIndexName());
     assertEquals(indexTableName.toLowerCase(), dropIdxMsg.getIndexTableName());
     assertEquals(tableName.toLowerCase(), dropIdxMsg.getOrigTableName());
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.DROP_INDEX, firstEventId + 4);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_INDEX, firstEventId + 3);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
 
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
@@ -947,6 +1141,12 @@ public class TestDbNotificationListener {
     assertEquals(indexTableName, indexObj.getIndexTableName());
     assertTrue(indexObj.getCreateTime() < indexObj.getLastAccessTime());
 
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.ALTER_INDEX, firstEventId + 4);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_INDEX, firstEventId + 3);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
+
     // When hive.metastore.transactional.event.listeners is set,
     // a failed event should not create a new notification
     DummyRawStoreFailEvent.setEventSucceed(false);
@@ -1003,6 +1203,10 @@ public class TestDbNotificationListener {
     assertEquals(tblName, event.getTableName());
     // Parse the message field
     verifyInsert(event, defaultDbName, tblName);
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.INSERT, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
   }
 
   @Test
@@ -1023,8 +1227,9 @@ public class TestDbNotificationListener {
     FieldSchema partCol1 = new FieldSchema("ds", "string", "no comment");
     List<FieldSchema> partCols = new ArrayList<FieldSchema>();
     List<String> partCol1Vals = Arrays.asList("today");
-    LinkedHashMap<String, String> partKeyVals = new LinkedHashMap<String, String>();
-    partKeyVals.put("ds", "today");
+    List<String> partKeyVals = new ArrayList<String>();
+    partKeyVals.add("today");
+
     partCols.add(partCol1);
     Table table =
         new Table(tblName, defaultDbName, tblOwner, startTime, startTime, 0, sd, partCols,
@@ -1060,9 +1265,14 @@ public class TestDbNotificationListener {
     // Parse the message field
     verifyInsert(event, defaultDbName, tblName);
     InsertMessage insertMessage = md.getInsertMessage(event.getMessage());
-    Map<String,String> partKeyValsFromNotif = insertMessage.getPartitionKeyValues();
+    List<String> ptnValues = insertMessage.getPtnObj().getValues();
 
-    assertMapEquals(partKeyVals, partKeyValsFromNotif);
+    assertEquals(partKeyVals, ptnValues);
+
+    // Verify the eventID was passed to the non-transactional listener
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.INSERT, firstEventId + 3);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.ADD_PARTITION, firstEventId + 2);
+    MockMetaStoreEventListener.popAndVerifyLastEventId(EventType.CREATE_TABLE, firstEventId + 1);
   }
 
 
@@ -1319,29 +1529,14 @@ public class TestDbNotificationListener {
     InsertMessage insertMsg = md.getInsertMessage(event.getMessage());
     System.out.println("InsertMessage: " + insertMsg.toString());
     if (dbName != null ){
-      assertEquals(dbName, insertMsg.getDB());
+      assertEquals(dbName, insertMsg.getTableObj().getDbName());
     }
     if (tblName != null){
-      assertEquals(tblName, insertMsg.getTable());
+      assertEquals(tblName, insertMsg.getTableObj().getTableName());
     }
     // Should have files
     Iterator<String> files = insertMsg.getFiles().iterator();
     assertTrue(files.hasNext());
-  }
-
-
-  private void assertMapEquals(Map<String, String> map1, Map<String, String> map2) {
-    // non ordered, non-classed map comparison - use sparingly instead of assertEquals
-    // only if you're sure that the order does not matter.
-    if ((map1 == null) || (map2 == null)){
-      assertNull(map1);
-      assertNull(map2);
-    }
-    assertEquals(map1.size(),map2.size());
-    for (String k : map1.keySet()){
-      assertTrue(map2.containsKey(k));
-      assertEquals(map1.get(k), map2.get(k));
-    }
   }
 
   @Test

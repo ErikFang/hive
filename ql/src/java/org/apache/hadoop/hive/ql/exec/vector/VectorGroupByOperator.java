@@ -286,7 +286,7 @@ public class VectorGroupByOperator extends Operator<GroupByDesc> implements
     /**
      * Total per hashtable entry fixed memory (does not depend on key/agg values).
      */
-    private int fixedHashEntrySize;
+    private long fixedHashEntrySize;
 
     /**
      * Average per hashtable entry variable size memory (depends on key/agg value).
@@ -374,6 +374,8 @@ public class VectorGroupByOperator extends Operator<GroupByDesc> implements
             HiveConf.ConfVars.HIVEGROUPBYMAPINTERVAL.defaultIntVal;
       }
 
+      sumBatchSize = 0;
+
       mapKeysAggregationBuffers = new HashMap<KeyWrapper, VectorAggregationBufferRow>();
       computeMemoryLimits();
       LOG.debug("using hash aggregation processing mode");
@@ -456,10 +458,18 @@ public class VectorGroupByOperator extends Operator<GroupByDesc> implements
       // to bump its internal version.
       aggregationBatchInfo.startBatch();
 
+      if (batch.size == 0) {
+        return;
+      }
+
       // We now have to probe the global hash and find-or-allocate
       // the aggregation buffers to use for each key present in the batch
       VectorHashKeyWrapper[] keyWrappers = keyWrappersBatch.getVectorHashKeyWrappers();
-      for (int i=0; i < batch.size; ++i) {
+
+      final int n = keyExpressions.length == 0 ? 1 : batch.size;
+      // note - the row mapping is not relevant when aggregationBatchInfo::getDistinctBufferSetCount() == 1
+
+      for (int i=0; i < n; ++i) {
         VectorHashKeyWrapper kw = keyWrappers[i];
         VectorAggregationBufferRow aggregationBuffer = mapKeysAggregationBuffers.get(kw);
         if (null == aggregationBuffer) {
@@ -813,6 +823,12 @@ public class VectorGroupByOperator extends Operator<GroupByDesc> implements
       if (first) {
         // Copy the group key to output batch now.  We'll copy in the aggregates at the end of the group.
         first = false;
+
+        // Evaluate the key expressions of just this first batch to get the correct key.
+        for (int i = 0; i < outputKeyLength; i++) {
+          keyExpressions[i].evaluate(batch);
+        }
+
         groupKeyHelper.copyGroupKey(batch, outputBatch, buffer);
       }
 
@@ -931,7 +947,9 @@ public class VectorGroupByOperator extends Operator<GroupByDesc> implements
 
       for (int i = 0; i < aggregators.length; ++i) {
         aggregators[i].init(conf.getAggregators().get(i));
-        objectInspectors.add(aggregators[i].getOutputObjectInspector());
+        ObjectInspector objInsp = aggregators[i].getOutputObjectInspector();
+        Preconditions.checkState(objInsp != null);
+        objectInspectors.add(objInsp);
       }
 
       keyWrappersBatch = VectorHashKeyWrapperBatch.compileKeyWrapperBatch(keyExpressions);
@@ -1039,7 +1057,7 @@ public class VectorGroupByOperator extends Operator<GroupByDesc> implements
       for (int i = 0; i < aggregators.length; ++i) {
         forwardCache[fi++] = aggregators[i].evaluateOutput(agg.getAggregationBuffer(i));
       }
-      forward(forwardCache, outputObjInspector);
+      forward(forwardCache, outputObjInspector, false);
     } else {
       // Output keys and aggregates into the output batch.
       for (int i = 0; i < outputKeyLength; ++i) {
@@ -1079,7 +1097,7 @@ public class VectorGroupByOperator extends Operator<GroupByDesc> implements
   }
 
   private void flushOutput() throws HiveException {
-    forward(outputBatch, null);
+    forward(outputBatch, null, true);
     outputBatch.reset();
   }
 

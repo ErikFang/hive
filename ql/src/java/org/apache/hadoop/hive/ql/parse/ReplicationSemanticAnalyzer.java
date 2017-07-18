@@ -1,92 +1,72 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/*
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
  */
 package org.apache.hadoop.hive.ql.parse;
 
-import com.google.common.base.Function;
-import com.google.common.collect.Iterables;
-import com.google.common.primitives.Ints;
-
+import com.google.common.base.Predicate;
+import com.google.common.collect.Collections2;
 import org.antlr.runtime.tree.Tree;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.IMetaStoreClient;
-import org.apache.hadoop.hive.metastore.ReplChangeManager;
 import org.apache.hadoop.hive.metastore.api.Database;
-import org.apache.hadoop.hive.metastore.api.FieldSchema;
-import org.apache.hadoop.hive.metastore.api.NotificationEvent;
-import org.apache.hadoop.hive.metastore.messaging.AddPartitionMessage;
-import org.apache.hadoop.hive.metastore.messaging.AlterPartitionMessage;
-import org.apache.hadoop.hive.metastore.messaging.AlterTableMessage;
-import org.apache.hadoop.hive.metastore.messaging.CreateTableMessage;
-import org.apache.hadoop.hive.metastore.messaging.DropPartitionMessage;
-import org.apache.hadoop.hive.metastore.messaging.DropTableMessage;
-import org.apache.hadoop.hive.metastore.messaging.EventUtils;
-import org.apache.hadoop.hive.metastore.messaging.InsertMessage;
-import org.apache.hadoop.hive.metastore.messaging.MessageDeserializer;
-import org.apache.hadoop.hive.metastore.messaging.MessageFactory;
-import org.apache.hadoop.hive.metastore.messaging.PartitionFiles;
+import org.apache.hadoop.hive.metastore.api.InvalidOperationException;
 import org.apache.hadoop.hive.ql.ErrorMsg;
 import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.Task;
 import org.apache.hadoop.hive.ql.exec.TaskFactory;
-import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.exec.repl.ReplDumpWork;
 import org.apache.hadoop.hive.ql.hooks.ReadEntity;
+import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
-import org.apache.hadoop.hive.ql.metadata.Partition;
 import org.apache.hadoop.hive.ql.metadata.Table;
+import org.apache.hadoop.hive.ql.parse.repl.dump.Utils;
+import org.apache.hadoop.hive.ql.parse.repl.load.DumpMetaData;
+import org.apache.hadoop.hive.ql.parse.repl.load.EventDumpDirComparator;
+import org.apache.hadoop.hive.ql.parse.repl.load.MetaData;
+import org.apache.hadoop.hive.ql.parse.repl.load.message.CreateFunctionHandler;
+import org.apache.hadoop.hive.ql.parse.repl.load.message.MessageHandler;
 import org.apache.hadoop.hive.ql.plan.AlterDatabaseDesc;
 import org.apache.hadoop.hive.ql.plan.AlterTableDesc;
 import org.apache.hadoop.hive.ql.plan.CreateDatabaseDesc;
 import org.apache.hadoop.hive.ql.plan.DDLWork;
 import org.apache.hadoop.hive.ql.plan.DependencyCollectionWork;
-import org.apache.hadoop.hive.ql.plan.DropTableDesc;
-import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
-import org.apache.hadoop.hive.ql.plan.ExprNodeConstantDesc;
-import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.ql.plan.PlanUtils;
-import org.apache.hadoop.hive.ql.plan.RenamePartitionDesc;
-import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
-import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
-import org.apache.hadoop.io.IOUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
-
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.DataOutputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
 import java.io.Serializable;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.apache.hadoop.hive.ql.parse.HiveParser.*;
+import static org.apache.hadoop.hive.ql.parse.HiveParser.TOK_FROM;
+import static org.apache.hadoop.hive.ql.parse.HiveParser.TOK_LIMIT;
+import static org.apache.hadoop.hive.ql.parse.HiveParser.TOK_REPL_DUMP;
+import static org.apache.hadoop.hive.ql.parse.HiveParser.TOK_REPL_LOAD;
+import static org.apache.hadoop.hive.ql.parse.HiveParser.TOK_REPL_STATUS;
+import static org.apache.hadoop.hive.ql.parse.HiveParser.TOK_TO;
 
 public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
   // Database name or pattern
@@ -102,141 +82,10 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
   private static String testInjectDumpDir = null; // unit tests can overwrite this to affect default dump behaviour
   private static final String dumpSchema = "dump_dir,last_repl_id#string,string";
 
-  public static final String DUMPMETADATA = "_dumpmetadata";
+  private static final String FUNCTIONS_ROOT_DIR_NAME = "_functions";
+  private final static Logger REPL_STATE_LOG = LoggerFactory.getLogger("ReplState");
 
-  public enum DUMPTYPE {
-    BOOTSTRAP("BOOTSTRAP"),
-    INCREMENTAL("INCREMENTAL"),
-    EVENT_CREATE_TABLE("EVENT_CREATE_TABLE"),
-    EVENT_ADD_PARTITION("EVENT_ADD_PARTITION"),
-    EVENT_DROP_TABLE("EVENT_DROP_TABLE"),
-    EVENT_DROP_PARTITION("EVENT_DROP_PARTITION"),
-    EVENT_ALTER_TABLE("EVENT_ALTER_TABLE"),
-    EVENT_RENAME_TABLE("EVENT_RENAME_TABLE"),
-    EVENT_ALTER_PARTITION("EVENT_ALTER_PARTITION"),
-    EVENT_RENAME_PARTITION("EVENT_RENAME_PARTITION"),
-    EVENT_INSERT("EVENT_INSERT"),
-    EVENT_UNKNOWN("EVENT_UNKNOWN");
-
-    String type = null;
-    DUMPTYPE(String type) {
-      this.type = type;
-    }
-
-    @Override
-    public String toString(){
-      return type;
-    }
-
-  };
-
-  public class DumpMetaData {
-    // wrapper class for reading and writing metadata about a dump
-    // responsible for _dumpmetadata files
-
-    private DUMPTYPE dumpType;
-    private Long eventFrom = null;
-    private Long eventTo = null;
-    private String payload = null;
-    private boolean initialized = false;
-
-    private final Path dumpRoot;
-    private final Path dumpFile;
-    private Path cmRoot;
-
-    public DumpMetaData(Path dumpRoot) {
-      this.dumpRoot = dumpRoot;
-      dumpFile = new Path(dumpRoot, DUMPMETADATA);
-    }
-
-    public DumpMetaData(Path dumpRoot, DUMPTYPE lvl, Long eventFrom, Long eventTo, Path cmRoot){
-      this(dumpRoot);
-      setDump(lvl, eventFrom, eventTo, cmRoot);
-    }
-
-    public void setDump(DUMPTYPE lvl, Long eventFrom, Long eventTo, Path cmRoot){
-      this.dumpType = lvl;
-      this.eventFrom = eventFrom;
-      this.eventTo = eventTo;
-      this.initialized = true;
-      this.cmRoot = cmRoot;
-    }
-
-    public void loadDumpFromFile() throws SemanticException {
-      try {
-        // read from dumpfile and instantiate self
-        FileSystem fs = dumpFile.getFileSystem(conf);
-        BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(dumpFile)));
-        String line = null;
-        if ( (line = br.readLine()) != null){
-          String[] lineContents = line.split("\t", 5);
-          setDump(DUMPTYPE.valueOf(lineContents[0]), Long.valueOf(lineContents[1]), Long.valueOf(lineContents[2]),
-              new Path(lineContents[3]));
-          setPayload(lineContents[4].equals(Utilities.nullStringOutput) ? null : lineContents[4]);
-          ReplChangeManager.setCmRoot(cmRoot);
-        } else {
-          throw new IOException("Unable to read valid values from dumpFile:"+dumpFile.toUri().toString());
-        }
-      } catch (IOException ioe){
-        throw new SemanticException(ioe);
-      }
-    }
-
-    public DUMPTYPE getDumpType() throws SemanticException {
-      initializeIfNot();
-      return this.dumpType;
-    }
-
-    public String getPayload() throws SemanticException {
-      initializeIfNot();
-      return this.payload;
-    }
-
-    public void setPayload(String payload) {
-      this.payload = payload;
-    }
-
-    public Long getEventFrom() throws SemanticException {
-      initializeIfNot();
-      return eventFrom;
-    }
-
-    public Long getEventTo() throws SemanticException {
-      initializeIfNot();
-      return eventTo;
-    }
-
-    public Path getCmRoot() {
-      return cmRoot;
-    }
-
-    public void setCmRoot(Path cmRoot) {
-      this.cmRoot = cmRoot;
-    }
-
-    public Path getDumpFilePath() {
-      return dumpFile;
-    }
-
-    public boolean isIncrementalDump() throws SemanticException {
-      initializeIfNot();
-      return (this.dumpType == DUMPTYPE.INCREMENTAL);
-    }
-
-    private void initializeIfNot() throws SemanticException {
-      if (!initialized){
-        loadDumpFromFile();
-      }
-    }
-
-    public void write() throws SemanticException {
-      writeOutput(Arrays.asList(dumpType.toString(), eventFrom.toString(), eventTo.toString(),
-          cmRoot.toString(), payload), dumpFile);
-    }
-
-  }
-
-  public ReplicationSemanticAnalyzer(QueryState queryState) throws SemanticException {
+  ReplicationSemanticAnalyzer(QueryState queryState) throws SemanticException {
     super(queryState);
   }
 
@@ -312,425 +161,25 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
     LOG.debug("ReplicationSemanticAnalyzer.analyzeReplDump: " + String.valueOf(dbNameOrPattern)
         + "." + String.valueOf(tblNameOrPattern) + " from " + String.valueOf(eventFrom) + " to "
         + String.valueOf(eventTo) + " maxEventLimit " + String.valueOf(maxEventLimit));
-    String replRoot = conf.getVar(HiveConf.ConfVars.REPLDIR);
-    Path dumpRoot = new Path(replRoot, getNextDumpDir());
-    DumpMetaData dmd = new DumpMetaData(dumpRoot);
-    Path cmRoot = new Path(conf.getVar(HiveConf.ConfVars.REPLCMDIR));
-    Long lastReplId;
     try {
-      if (eventFrom == null){
-        // bootstrap case
-        Long bootDumpBeginReplId = db.getMSC().getCurrentNotificationEventId().getEventId();
-        for (String dbName : matchesDb(dbNameOrPattern)) {
-          LOG.debug("ReplicationSemanticAnalyzer: analyzeReplDump dumping db: " + dbName);
-          Path dbRoot = dumpDbMetadata(dbName, dumpRoot);
-          for (String tblName : matchesTbl(dbName, tblNameOrPattern)) {
-            LOG.debug("ReplicationSemanticAnalyzer: analyzeReplDump dumping table: " + tblName
-                + " to db root " + dbRoot.toUri());
-            dumpTbl(ast, dbName, tblName, dbRoot);
-          }
-        }
-        Long bootDumpEndReplId = db.getMSC().getCurrentNotificationEventId().getEventId();
-        LOG.info("Bootstrap object dump phase took from {} to {}", bootDumpBeginReplId, bootDumpEndReplId);
-
-        // Now that bootstrap has dumped all objects related, we have to account for the changes
-        // that occurred while bootstrap was happening - i.e. we have to look through all events
-        // during the bootstrap period and consolidate them with our dump.
-
-        IMetaStoreClient.NotificationFilter evFilter =
-            EventUtils.getDbTblNotificationFilter(dbNameOrPattern, tblNameOrPattern);
-        EventUtils.MSClientNotificationFetcher evFetcher =
-            new EventUtils.MSClientNotificationFetcher(db.getMSC());
-        EventUtils.NotificationEventIterator evIter = new EventUtils.NotificationEventIterator(
-            evFetcher, bootDumpBeginReplId,
-            Ints.checkedCast(bootDumpEndReplId - bootDumpBeginReplId) + 1,
-            evFilter );
-
-        // Now we consolidate all the events that happenned during the objdump into the objdump
-        while (evIter.hasNext()){
-          NotificationEvent ev = evIter.next();
-          Path evRoot = new Path(dumpRoot, String.valueOf(ev.getEventId()));
-          // FIXME : implement consolidateEvent(..) similar to dumpEvent(ev,evRoot)
-        }
-        LOG.info(
-            "Consolidation done, preparing to return {},{}->{}",
-            dumpRoot.toUri(), bootDumpBeginReplId, bootDumpEndReplId);
-        dmd.setDump(DUMPTYPE.BOOTSTRAP, bootDumpBeginReplId, bootDumpEndReplId, cmRoot);
-        dmd.write();
-
-        // Set the correct last repl id to return to the user
-        lastReplId = bootDumpEndReplId;
-      } else {
-        // get list of events matching dbPattern & tblPattern
-        // go through each event, and dump out each event to a event-level dump dir inside dumproot
-        if (eventTo == null){
-          eventTo = db.getMSC().getCurrentNotificationEventId().getEventId();
-          LOG.debug("eventTo not specified, using current event id : {}", eventTo);
-        }
-
-        Integer maxRange = Ints.checkedCast(eventTo - eventFrom + 1);
-        if ((maxEventLimit == null) || (maxEventLimit > maxRange)){
-          maxEventLimit = maxRange;
-        }
-
-        // TODO : instead of simply restricting by message format, we should eventually
-        // move to a jdbc-driver-stype registering of message format, and picking message
-        // factory per event to decode. For now, however, since all messages have the
-        // same factory, restricting by message format is effectively a guard against
-        // older leftover data that would cause us problems.
-
-        IMetaStoreClient.NotificationFilter evFilter = EventUtils.andFilter(
-            EventUtils.getDbTblNotificationFilter(dbNameOrPattern, tblNameOrPattern),
-            EventUtils.getEventBoundaryFilter(eventFrom, eventTo),
-            EventUtils.restrictByMessageFormat(MessageFactory.getInstance().getMessageFormat()));
-
-        EventUtils.MSClientNotificationFetcher evFetcher
-            = new EventUtils.MSClientNotificationFetcher(db.getMSC());
-
-        EventUtils.NotificationEventIterator evIter = new EventUtils.NotificationEventIterator(
-            evFetcher, eventFrom, maxEventLimit, evFilter);
-
-        while (evIter.hasNext()){
-          NotificationEvent ev = evIter.next();
-          Path evRoot = new Path(dumpRoot, String.valueOf(ev.getEventId()));
-          dumpEvent(ev, evRoot, cmRoot);
-        }
-
-        LOG.info("Done dumping events, preparing to return {},{}", dumpRoot.toUri(), eventTo);
-        writeOutput(
-            Arrays.asList("incremental", String.valueOf(eventFrom), String.valueOf(eventTo)),
-            dmd.getDumpFilePath());
-        dmd.setDump(DUMPTYPE.INCREMENTAL, eventFrom, eventTo, cmRoot);
-        dmd.write();
-        // Set the correct last repl id to return to the user
-        lastReplId = eventTo;
-      }
-      prepareReturnValues(Arrays.asList(dumpRoot.toUri().toString(), String.valueOf(lastReplId)), dumpSchema);
+      ctx.setResFile(ctx.getLocalTmpPath());
+      Task<ReplDumpWork> replDumpWorkTask = TaskFactory
+          .get(new ReplDumpWork(
+              dbNameOrPattern,
+              tblNameOrPattern,
+              eventFrom,
+              eventTo,
+              ErrorMsg.INVALID_PATH.getMsg(ast),
+              maxEventLimit,
+              ctx.getResFile().toUri().toString()
+          ), conf);
+      rootTasks.add(replDumpWorkTask);
       setFetchTask(createFetchTask(dumpSchema));
     } catch (Exception e) {
       // TODO : simple wrap & rethrow for now, clean up with error codes
       LOG.warn("Error during analyzeReplDump", e);
       throw new SemanticException(e);
     }
-  }
-
-  private void dumpEvent(NotificationEvent ev, Path evRoot, Path cmRoot) throws Exception {
-    long evid = ev.getEventId();
-    String evidStr = String.valueOf(evid);
-    ReplicationSpec replicationSpec = getNewEventOnlyReplicationSpec(evidStr);
-    MessageDeserializer md = MessageFactory.getInstance().getDeserializer();
-    switch (ev.getEventType()){
-      case MessageFactory.CREATE_TABLE_EVENT : {
-        CreateTableMessage ctm = md.getCreateTableMessage(ev.getMessage());
-        LOG.info("Processing#{} CREATE_TABLE message : {}", ev.getEventId(), ev.getMessage());
-        org.apache.hadoop.hive.metastore.api.Table tobj = ctm.getTableObj();
-
-        if (tobj == null){
-          LOG.debug("Event#{} was a CREATE_TABLE_EVENT with no table listed");
-          break;
-        }
-
-        Table qlMdTable = new Table(tobj);
-        if (qlMdTable.isView()) {
-          replicationSpec.setIsMetadataOnly(true);
-        }
-
-        Path metaDataPath = new Path(evRoot, EximUtil.METADATA_NAME);
-        EximUtil.createExportDump(
-            metaDataPath.getFileSystem(conf),
-            metaDataPath,
-            qlMdTable,
-            null,
-            replicationSpec);
-
-        Path dataPath = new Path(evRoot, "data");
-        Iterable<String> files = ctm.getFiles();
-        if (files != null) {
-          // encoded filename/checksum of files, write into _files
-          FileSystem fs = dataPath.getFileSystem(conf);
-          Path filesPath = new Path(dataPath, EximUtil.FILES_NAME);
-          BufferedWriter fileListWriter = new BufferedWriter(
-              new OutputStreamWriter(fs.create(filesPath)));
-          try {
-            for (String file : files) {
-              fileListWriter.write(file + "\n");
-            }
-          } finally {
-            fileListWriter.close();
-          }
-        }
-
-        (new DumpMetaData(evRoot, DUMPTYPE.EVENT_CREATE_TABLE, evid, evid, cmRoot)).write();
-        break;
-      }
-      case MessageFactory.ADD_PARTITION_EVENT : {
-        AddPartitionMessage apm = md.getAddPartitionMessage(ev.getMessage());
-        LOG.info("Processing#{} ADD_PARTITION message : {}", ev.getEventId(), ev.getMessage());
-        Iterable<org.apache.hadoop.hive.metastore.api.Partition> ptns = apm.getPartitionObjs();
-        if ((ptns == null) || (!ptns.iterator().hasNext())) {
-          LOG.debug("Event#{} was an ADD_PTN_EVENT with no partitions");
-          break;
-        }
-        org.apache.hadoop.hive.metastore.api.Table tobj = apm.getTableObj();
-        if (tobj == null){
-          LOG.debug("Event#{} was a ADD_PTN_EVENT with no table listed");
-          break;
-        }
-
-        final Table qlMdTable = new Table(tobj);
-        Iterable<Partition> qlPtns = Iterables.transform(
-            ptns,
-            new Function<org.apache.hadoop.hive.metastore.api.Partition, Partition>() {
-              @Nullable
-              @Override
-              public Partition apply(@Nullable org.apache.hadoop.hive.metastore.api.Partition input) {
-                if (input == null) {
-                  return null;
-                }
-                try {
-                  return new Partition(qlMdTable, input);
-                } catch (HiveException e) {
-                  throw new IllegalArgumentException(e);
-                }
-              }
-            }
-        );
-
-        Path metaDataPath = new Path(evRoot, EximUtil.METADATA_NAME);
-        EximUtil.createExportDump(
-            metaDataPath.getFileSystem(conf),
-            metaDataPath,
-            qlMdTable,
-            qlPtns,
-            replicationSpec);
-
-        Iterator<PartitionFiles> partitionFilesIter = apm.getPartitionFilesIter().iterator();
-        for (Partition qlPtn : qlPtns){
-          PartitionFiles partitionFiles = partitionFilesIter.next();
-          Iterable<String> files = partitionFiles.getFiles();
-          if (files != null) {
-            // encoded filename/checksum of files, write into _files
-            Path ptnDataPath = new Path(evRoot, qlPtn.getName());
-            FileSystem fs = ptnDataPath.getFileSystem(conf);
-            Path filesPath = new Path(ptnDataPath, EximUtil.FILES_NAME);
-            BufferedWriter fileListWriter = new BufferedWriter(
-                new OutputStreamWriter(fs.create(filesPath)));
-            try {
-              for (String file : files) {
-                fileListWriter.write(file + "\n");
-              }
-            } finally {
-              fileListWriter.close();
-            }
-          }
-        }
-
-        (new DumpMetaData(evRoot, DUMPTYPE.EVENT_ADD_PARTITION, evid, evid, cmRoot)).write();
-        break;
-      }
-      case MessageFactory.DROP_TABLE_EVENT : {
-        LOG.info("Processing#{} DROP_TABLE message : {}", ev.getEventId(), ev.getMessage());
-        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_DROP_TABLE, evid, evid, cmRoot);
-        dmd.setPayload(ev.getMessage());
-        dmd.write();
-        break;
-      }
-      case MessageFactory.DROP_PARTITION_EVENT : {
-        LOG.info("Processing#{} DROP_PARTITION message : {}", ev.getEventId(), ev.getMessage());
-        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_DROP_PARTITION, evid, evid, cmRoot);
-        dmd.setPayload(ev.getMessage());
-        dmd.write();
-        break;
-      }
-      case MessageFactory.ALTER_TABLE_EVENT : {
-        LOG.info("Processing#{} ALTER_TABLE message : {}", ev.getEventId(), ev.getMessage());
-        AlterTableMessage atm = md.getAlterTableMessage(ev.getMessage());
-        org.apache.hadoop.hive.metastore.api.Table tobjBefore = atm.getTableObjBefore();
-        org.apache.hadoop.hive.metastore.api.Table tobjAfter = atm.getTableObjAfter();
-
-        if (tobjBefore.getDbName().equals(tobjAfter.getDbName()) &&
-            tobjBefore.getTableName().equals(tobjAfter.getTableName())){
-          // regular alter scenario
-          replicationSpec.setIsMetadataOnly(true);
-          Table qlMdTableAfter = new Table(tobjAfter);
-          Path metaDataPath = new Path(evRoot, EximUtil.METADATA_NAME);
-          EximUtil.createExportDump(
-              metaDataPath.getFileSystem(conf),
-              metaDataPath,
-              qlMdTableAfter,
-              null,
-              replicationSpec);
-
-          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_ALTER_TABLE, evid, evid, cmRoot);
-          dmd.setPayload(ev.getMessage());
-          dmd.write();
-        } else {
-          // rename scenario
-          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_RENAME_TABLE, evid, evid, cmRoot);
-          dmd.setPayload(ev.getMessage());
-          dmd.write();
-        }
-
-        break;
-      }
-      case MessageFactory.ALTER_PARTITION_EVENT : {
-        LOG.info("Processing#{} ALTER_PARTITION message : {}", ev.getEventId(), ev.getMessage());
-        AlterPartitionMessage apm = md.getAlterPartitionMessage(ev.getMessage());
-        org.apache.hadoop.hive.metastore.api.Table tblObj = apm.getTableObj();
-        org.apache.hadoop.hive.metastore.api.Partition pobjBefore = apm.getPtnObjBefore();
-        org.apache.hadoop.hive.metastore.api.Partition pobjAfter = apm.getPtnObjAfter();
-
-        boolean renameScenario = false;
-        Iterator<String> beforeValIter = pobjBefore.getValuesIterator();
-        Iterator<String> afterValIter = pobjAfter.getValuesIterator();
-        for ( ; beforeValIter.hasNext() ; ){
-          if (!beforeValIter.next().equals(afterValIter.next())){
-            renameScenario = true;
-            break;
-          }
-        }
-
-        if (!renameScenario){
-          // regular partition alter
-          replicationSpec.setIsMetadataOnly(true);
-          Table qlMdTable = new Table(tblObj);
-          List<Partition> qlPtns = new ArrayList<Partition>();
-          qlPtns.add(new Partition(qlMdTable, pobjAfter));
-          Path metaDataPath = new Path(evRoot, EximUtil.METADATA_NAME);
-          EximUtil.createExportDump(
-              metaDataPath.getFileSystem(conf),
-              metaDataPath,
-              qlMdTable,
-              qlPtns,
-              replicationSpec);
-          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_ALTER_PARTITION, evid, evid, cmRoot);
-          dmd.setPayload(ev.getMessage());
-          dmd.write();
-          break;
-        } else {
-          // rename scenario
-          DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_RENAME_PARTITION, evid, evid, cmRoot);
-          dmd.setPayload(ev.getMessage());
-          dmd.write();
-          break;
-        }
-      }
-      case MessageFactory.INSERT_EVENT: {
-        InsertMessage insertMsg = md.getInsertMessage(ev.getMessage());
-        String dbName = insertMsg.getDB();
-        String tblName = insertMsg.getTable();
-        org.apache.hadoop.hive.metastore.api.Table tobj = db.getMSC().getTable(dbName, tblName);
-        Table qlMdTable = new Table(tobj);
-        Map<String, String> partSpec = insertMsg.getPartitionKeyValues();
-        List<Partition> qlPtns  = null;
-        if (qlMdTable.isPartitioned() && !partSpec.isEmpty()) {
-          qlPtns = Arrays.asList(db.getPartition(qlMdTable, partSpec, false));
-        }
-        Path metaDataPath = new Path(evRoot, EximUtil.METADATA_NAME);
-        replicationSpec.setIsInsert(true); // Mark the replication type as insert into to avoid overwrite while import
-        EximUtil.createExportDump(metaDataPath.getFileSystem(conf), metaDataPath, qlMdTable, qlPtns,
-            replicationSpec);
-        Iterable<String> files = insertMsg.getFiles();
-
-        if (files != null) {
-          // encoded filename/checksum of files, write into _files
-          Path dataPath = new Path(evRoot, EximUtil.DATA_PATH_NAME);
-          Path filesPath = new Path(dataPath, EximUtil.FILES_NAME);
-          FileSystem fs = dataPath.getFileSystem(conf);
-          BufferedWriter fileListWriter =
-              new BufferedWriter(new OutputStreamWriter(fs.create(filesPath)));
-
-          try {
-            for (String file : files) {
-              fileListWriter.write(file + "\n");
-            }
-          } finally {
-            fileListWriter.close();
-          }
-        }
-
-        LOG.info("Processing#{} INSERT message : {}", ev.getEventId(), ev.getMessage());
-        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_INSERT, evid, evid, cmRoot);
-        dmd.setPayload(ev.getMessage());
-        dmd.write();
-        break;
-      }
-      // TODO : handle other event types
-      default:
-        LOG.info("Dummy processing#{} message : {}", ev.getEventId(), ev.getMessage());
-        DumpMetaData dmd = new DumpMetaData(evRoot, DUMPTYPE.EVENT_UNKNOWN, evid, evid, cmRoot);
-        dmd.setPayload(ev.getMessage());
-        dmd.write();
-        break;
-    }
-
-  }
-
-  public static void injectNextDumpDirForTest(String dumpdir){
-    testInjectDumpDir = dumpdir;
-  }
-
-  String getNextDumpDir() {
-    if (conf.getBoolVar(HiveConf.ConfVars.HIVE_IN_TEST)) {
-      // make it easy to write .q unit tests, instead of unique id generation.
-      // however, this does mean that in writing tests, we have to be aware that
-      // repl dump will clash with prior dumps, and thus have to clean up properly.
-      if (testInjectDumpDir == null){
-        return "next";
-      } else {
-        return testInjectDumpDir;
-      }
-    } else {
-      return String.valueOf(System.currentTimeMillis());
-      // TODO: time good enough for now - we'll likely improve this.
-      // We may also work in something the equivalent of pid, thrid and move to nanos to ensure
-      // uniqueness.
-    }
-  }
-
-  /**
-   *
-   * @param dbName
-   * @param dumpRoot
-   * @return db dumped path
-   * @throws SemanticException
-   */
-  private Path dumpDbMetadata(String dbName, Path dumpRoot) throws SemanticException {
-    Path dbRoot = new Path(dumpRoot, dbName);
-    try {
-      // TODO : instantiating FS objects are generally costly. Refactor
-      FileSystem fs = dbRoot.getFileSystem(conf);
-      Path dumpPath = new Path(dbRoot, EximUtil.METADATA_NAME);
-      Database dbObj = db.getDatabase(dbName);
-      EximUtil.createDbExportDump(fs, dumpPath, dbObj, getNewReplicationSpec());
-    } catch (Exception e) {
-      // TODO : simple wrap & rethrow for now, clean up with error codes
-      throw new SemanticException(e);
-    }
-    return dbRoot;
-  }
-
-  /**
-   *
-   * @param ast
-   * @param dbName
-   * @param tblName
-   * @param dbRoot
-   * @return tbl dumped path
-   * @throws SemanticException
-   */
-  private Path dumpTbl(ASTNode ast, String dbName, String tblName, Path dbRoot) throws SemanticException {
-    Path tableRoot = new Path(dbRoot, tblName);
-    try {
-      URI toURI = EximUtil.getValidatedURI(conf, tableRoot.toUri().toString());
-      TableSpec ts = new TableSpec(db, conf, dbName + "." + tblName, null);
-      ExportSemanticAnalyzer.prepareExport(ast, toURI, ts, getNewReplicationSpec(), db, conf, ctx,
-          rootTasks, inputs, outputs, LOG);
-    } catch (HiveException e) {
-      // TODO : simple wrap & rethrow for now, clean up with error codes
-      throw new SemanticException(e);
-    }
-    return tableRoot;
   }
 
   // REPL LOAD
@@ -820,7 +269,7 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
       // At this point, all dump dirs should contain a _dumpmetadata file that
       // tells us what is inside that dumpdir.
 
-      DumpMetaData dmd = new DumpMetaData(loadPath);
+      DumpMetaData dmd = new DumpMetaData(loadPath, conf);
 
       boolean evDump = false;
       if (dmd.isIncrementalDump()){
@@ -865,19 +314,25 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
           analyzeDatabaseLoad(dbNameOrPattern, fs, dir);
         }
       } else {
-        // event dump, each subdir is an individual event dump.
-        Arrays.sort(dirsInLoadPath); // we need to guarantee that the directory listing we got is in order of evid.
+        // Event dump, each sub-dir is an individual event dump.
+        // We need to guarantee that the directory listing we got is in order of evid.
+        Arrays.sort(dirsInLoadPath, new EventDumpDirComparator());
 
         Task<? extends Serializable> evTaskRoot = TaskFactory.get(new DependencyCollectionWork(), conf);
         Task<? extends Serializable> taskChainTail = evTaskRoot;
 
         int evstage = 0;
+        int evIter = 0;
         Long lastEvid = null;
         Map<String,Long> dbsUpdated = new ReplicationSpec.ReplStateMap<String,Long>();
         Map<String,Long> tablesUpdated = new ReplicationSpec.ReplStateMap<String,Long>();
 
+        REPL_STATE_LOG.info("Repl Load: Started analyzing Repl load for DB: {} from path {}, Dump Type: INCREMENTAL",
+                (null != dbNameOrPattern && !dbNameOrPattern.isEmpty()) ? dbNameOrPattern : "?",
+                loadPath.toUri().toString());
         for (FileStatus dir : dirsInLoadPath){
           LOG.debug("Loading event from {} to {}.{}", dir.getPath().toUri(), dbNameOrPattern, tblNameOrPattern);
+
           // event loads will behave similar to table loads, with one crucial difference
           // precursor order is strict, and each event must be processed after the previous one.
           // The way we handle this strict order is as follows:
@@ -898,10 +353,16 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
           // entire chain
 
           String locn = dir.getPath().toUri().toString();
-          DumpMetaData eventDmd = new DumpMetaData(new Path(locn));
+          DumpMetaData eventDmd = new DumpMetaData(new Path(locn), conf);
           List<Task<? extends Serializable>> evTasks = analyzeEventLoad(
               dbNameOrPattern, tblNameOrPattern, locn, taskChainTail,
               dbsUpdated, tablesUpdated, eventDmd);
+          evIter++;
+          REPL_STATE_LOG.info("Repl Load: Analyzed load for event {}/{} " +
+                              "with ID: {}, Type: {}, Path: {}",
+                              evIter, dirsInLoadPath.length,
+                              dir.getPath().getName(), eventDmd.getDumpType().toString(), locn);
+
           LOG.debug("evstage#{} got {} tasks", evstage, evTasks!=null ? evTasks.size() : 0);
           if ((evTasks != null) && (!evTasks.isEmpty())){
             Task<? extends Serializable> barrierTask = TaskFactory.get(new DependencyCollectionWork(), conf);
@@ -914,7 +375,7 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
                 taskChainTail.getClass(), taskChainTail.getId(), barrierTask.getClass(), barrierTask.getId());
             taskChainTail = barrierTask;
             evstage++;
-            lastEvid = dmd.eventTo;
+            lastEvid = dmd.getEventTo();
           }
         }
 
@@ -965,11 +426,11 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
         for (String tableName : tablesUpdated.keySet()){
           // weird - AlterTableDesc requires a HashMap to update props instead of a Map.
           HashMap<String,String> mapProp = new HashMap<String,String>();
-          mapProp.put(
-              ReplicationSpec.KEY.CURR_STATE_ID.toString(),
-              tablesUpdated.get(tableName).toString());
+          String eventId = tablesUpdated.get(tableName).toString();
+
+          mapProp.put(ReplicationSpec.KEY.CURR_STATE_ID.toString(), eventId);
           AlterTableDesc alterTblDesc =  new AlterTableDesc(
-              AlterTableDesc.AlterTableTypes.ADDPROPS, null, false);
+              AlterTableDesc.AlterTableTypes.ADDPROPS, new ReplicationSpec(eventId, eventId));
           alterTblDesc.setProps(mapProp);
           alterTblDesc.setOldName(tableName);
           Task<? extends Serializable> updateReplIdTask = TaskFactory.get(
@@ -979,16 +440,20 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
         }
         for (String dbName : dbsUpdated.keySet()){
           Map<String,String> mapProp = new HashMap<String,String>();
-          mapProp.put(
-              ReplicationSpec.KEY.CURR_STATE_ID.toString(),
-              dbsUpdated.get(dbName).toString());
-          AlterDatabaseDesc alterDbDesc = new AlterDatabaseDesc(dbName, mapProp);
+          String eventId = dbsUpdated.get(dbName).toString();
+
+          mapProp.put(ReplicationSpec.KEY.CURR_STATE_ID.toString(), eventId);
+          AlterDatabaseDesc alterDbDesc = new AlterDatabaseDesc(dbName, mapProp, new ReplicationSpec(eventId, eventId));
           Task<? extends Serializable> updateReplIdTask = TaskFactory.get(
               new DDLWork(inputs, outputs, alterDbDesc), conf);
           taskChainTail.addDependentTask(updateReplIdTask);
           taskChainTail = updateReplIdTask;
         }
         rootTasks.add(evTaskRoot);
+        REPL_STATE_LOG.info("Repl Load: Completed analyzing Repl load for DB: {} from path {} and created import " +
+                            "(DDL/COPY/MOVE) tasks",
+                            (null != dbNameOrPattern && !dbNameOrPattern.isEmpty()) ? dbNameOrPattern : "?",
+                            loadPath.toUri().toString());
       }
 
     } catch (Exception e) {
@@ -999,219 +464,47 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
   }
 
   private List<Task<? extends Serializable>> analyzeEventLoad(
-      String dbName, String tblName, String locn,
-      Task<? extends Serializable> precursor,
-      Map<String, Long> dbsUpdated, Map<String, Long> tablesUpdated,
-      DumpMetaData dmd) throws SemanticException {
-    MessageDeserializer md = MessageFactory.getInstance().getDeserializer();
-    switch (dmd.getDumpType()) {
-      case EVENT_CREATE_TABLE: {
-        return analyzeTableLoad(dbName, tblName, locn, precursor, dbsUpdated, tablesUpdated);
-      }
-      case EVENT_ADD_PARTITION: {
-        return analyzeTableLoad(dbName, tblName, locn, precursor, dbsUpdated, tablesUpdated);
-      }
-      case EVENT_DROP_TABLE: {
-        DropTableMessage dropTableMessage = md.getDropTableMessage(dmd.getPayload());
-        String actualDbName = ((dbName == null) || dbName.isEmpty() ? dropTableMessage.getDB() : dbName);
-        String actualTblName = ((tblName == null) || tblName.isEmpty() ? dropTableMessage.getTable() : tblName);
-        DropTableDesc dropTableDesc = new DropTableDesc(
-            actualDbName + "." + actualTblName,
-            null, true, true,
-            getNewEventOnlyReplicationSpec(String.valueOf(dmd.getEventFrom())));
-        Task<DDLWork> dropTableTask = TaskFactory.get(new DDLWork(inputs, outputs, dropTableDesc), conf);
-        if (precursor != null){
-          precursor.addDependentTask(dropTableTask);
-        }
-        List<Task<? extends Serializable>> tasks = new ArrayList<Task<? extends Serializable>>();
-        tasks.add(dropTableTask);
-        LOG.debug("Added drop tbl task : {}:{}", dropTableTask.getId(), dropTableDesc.getTableName());
-        dbsUpdated.put(actualDbName,dmd.getEventTo());
-        return tasks;
-      }
-      case EVENT_DROP_PARTITION: {
-        try {
-          DropPartitionMessage dropPartitionMessage = md.getDropPartitionMessage(dmd.getPayload());
-          String actualDbName = ((dbName == null) || dbName.isEmpty() ? dropPartitionMessage.getDB() : dbName);
-          String actualTblName = ((tblName == null) || tblName.isEmpty() ? dropPartitionMessage.getTable() : tblName);
-          Map<Integer, List<ExprNodeGenericFuncDesc>> partSpecs;
-          partSpecs =
-              genPartSpecs(new Table(dropPartitionMessage.getTableObj()),
-                  dropPartitionMessage.getPartitions());
-          if (partSpecs.size() > 0) {
-            DropTableDesc dropPtnDesc = new DropTableDesc(
-                actualDbName + "." + actualTblName,
-                partSpecs, null, true,
-                getNewEventOnlyReplicationSpec(String.valueOf(dmd.getEventFrom())));
-            Task<DDLWork> dropPtnTask =
-                TaskFactory.get(new DDLWork(inputs, outputs, dropPtnDesc), conf);
-            if (precursor != null) {
-              precursor.addDependentTask(dropPtnTask);
-            }
-            List<Task<? extends Serializable>> tasks = new ArrayList<Task<? extends Serializable>>();
-            tasks.add(dropPtnTask);
-            LOG.debug("Added drop ptn task : {}:{},{}", dropPtnTask.getId(),
-                dropPtnDesc.getTableName(), dropPartitionMessage.getPartitions());
-            dbsUpdated.put(actualDbName, dmd.getEventTo());
-            tablesUpdated.put(actualDbName + "." + actualTblName, dmd.getEventTo());
-            return tasks;
-          } else {
-            throw new SemanticException(
-                "DROP PARTITION EVENT does not return any part descs for event message :"
-                    + dmd.getPayload());
-          }
-        } catch (Exception e) {
-          if (!(e instanceof SemanticException)){
-            throw new SemanticException("Error reading message members", e);
-          } else {
-            throw (SemanticException)e;
-          }
-        }
-      }
-      case EVENT_ALTER_TABLE: {
-        return analyzeTableLoad(dbName, tblName, locn, precursor, dbsUpdated, tablesUpdated);
-      }
-      case EVENT_RENAME_TABLE: {
-        AlterTableMessage renameTableMessage = md.getAlterTableMessage(dmd.getPayload());
-        if ((tblName != null) && (!tblName.isEmpty())){
-          throw new SemanticException("RENAMES of tables are not supported for table-level replication");
-        }
-        try {
-          String oldDbName = renameTableMessage.getTableObjBefore().getDbName();
-          String newDbName = renameTableMessage.getTableObjAfter().getDbName();
+      String dbName, String tblName, String location, Task<? extends Serializable> precursor,
+      Map<String, Long> dbsUpdated, Map<String, Long> tablesUpdated, DumpMetaData dmd)
+      throws SemanticException {
+    MessageHandler.Context context =
+        new MessageHandler.Context(dbName, tblName, location, precursor, dmd, conf, db, ctx, LOG);
+    MessageHandler messageHandler = dmd.getDumpType().handler();
+    List<Task<? extends Serializable>> tasks = messageHandler.handle(context);
 
-          if ((dbName != null) && (!dbName.isEmpty())){
-            // If we're loading into a db, instead of into the warehouse, then the oldDbName and
-            // newDbName must be the same
-            if (!oldDbName.equalsIgnoreCase(newDbName)){
-              throw new SemanticException("Cannot replicate an event renaming a table across"
-                  + " databases into a db level load " + oldDbName +"->" + newDbName);
-            } else {
-              // both were the same, and can be replaced by the new db we're loading into.
-              oldDbName = dbName;
-              newDbName = dbName;
-            }
-          }
-
-          String oldName = oldDbName + "." + renameTableMessage.getTableObjBefore().getTableName();
-          String newName = newDbName + "." + renameTableMessage.getTableObjAfter().getTableName();
-          AlterTableDesc renameTableDesc = new AlterTableDesc(oldName, newName, false);
-          Task<DDLWork> renameTableTask = TaskFactory.get(new DDLWork(inputs, outputs, renameTableDesc), conf);
-          if (precursor != null){
-            precursor.addDependentTask(renameTableTask);
-          }
-          List<Task<? extends Serializable>> tasks = new ArrayList<Task<? extends Serializable>>();
-          tasks.add(renameTableTask);
-          LOG.debug("Added rename table task : {}:{}->{}", renameTableTask.getId(), oldName, newName);
-          dbsUpdated.put(newDbName, dmd.getEventTo()); // oldDbName and newDbName *will* be the same if we're here
-          tablesUpdated.remove(oldName);
-          tablesUpdated.put(newName, dmd.getEventTo());
-          // Note : edge-case here in interaction with table-level REPL LOAD, where that nukes out tablesUpdated
-          // However, we explicitly don't support repl of that sort, and error out above if so. If that should
-          // ever change, this will need reworking.
-          return tasks;
-        } catch (Exception e) {
-          if (!(e instanceof SemanticException)){
-            throw new SemanticException("Error reading message members", e);
-          } else {
-            throw (SemanticException)e;
-          }
-        }
-      }
-      case EVENT_ALTER_PARTITION: {
-        return analyzeTableLoad(dbName, tblName, locn, precursor, dbsUpdated, tablesUpdated);
-      }
-      case EVENT_RENAME_PARTITION: {
-        AlterPartitionMessage renamePtnMessage = md.getAlterPartitionMessage(dmd.getPayload());
-        String actualDbName = ((dbName == null) || dbName.isEmpty() ? renamePtnMessage.getDB() : dbName);
-        String actualTblName = ((tblName == null) || tblName.isEmpty() ? renamePtnMessage.getTable() : tblName);
-
-        Map<String, String> newPartSpec = new LinkedHashMap<String,String>();
-        Map<String, String> oldPartSpec = new LinkedHashMap<String,String>();
-        String tableName = actualDbName + "." + actualTblName;
-        try {
-          org.apache.hadoop.hive.metastore.api.Table tblObj = renamePtnMessage.getTableObj();
-          org.apache.hadoop.hive.metastore.api.Partition pobjBefore = renamePtnMessage.getPtnObjBefore();
-          org.apache.hadoop.hive.metastore.api.Partition pobjAfter = renamePtnMessage.getPtnObjAfter();
-          Iterator<String> beforeValIter = pobjBefore.getValuesIterator();
-          Iterator<String> afterValIter = pobjAfter.getValuesIterator();
-          for (FieldSchema fs : tblObj.getPartitionKeys()){
-            oldPartSpec.put(fs.getName(), beforeValIter.next());
-            newPartSpec.put(fs.getName(), afterValIter.next());
-          }
-        } catch (Exception e) {
-          if (!(e instanceof SemanticException)){
-            throw new SemanticException("Error reading message members", e);
-          } else {
-            throw (SemanticException)e;
-          }
-        }
-
-        RenamePartitionDesc renamePtnDesc = new RenamePartitionDesc(tableName, oldPartSpec, newPartSpec);
-        Task<DDLWork> renamePtnTask = TaskFactory.get(new DDLWork(inputs, outputs, renamePtnDesc), conf);
-        if (precursor != null){
-          precursor.addDependentTask(renamePtnTask);
-        }
-        List<Task<? extends Serializable>> tasks = new ArrayList<Task<? extends Serializable>>();
-        tasks.add(renamePtnTask);
-        LOG.debug("Added rename ptn task : {}:{}->{}", renamePtnTask.getId(), oldPartSpec, newPartSpec);
-        dbsUpdated.put(actualDbName, dmd.getEventTo());
-        tablesUpdated.put(tableName, dmd.getEventTo());
-        return tasks;
-      }
-      case EVENT_INSERT: {
-        md = MessageFactory.getInstance().getDeserializer();
-        InsertMessage insertMessage = md.getInsertMessage(dmd.getPayload());
-        String actualDbName = ((dbName == null) || dbName.isEmpty() ? insertMessage.getDB() : dbName);
-        String actualTblName = ((tblName == null) || tblName.isEmpty() ? insertMessage.getTable() : tblName);
-
-        // Piggybacking in Import logic for now
-        return analyzeTableLoad(actualDbName, actualTblName, locn, precursor, dbsUpdated, tablesUpdated);
-      }
-      case EVENT_UNKNOWN: {
-        break;
-      }
-      default: {
-        break;
+    if (precursor != null) {
+      for (Task<? extends Serializable> t : tasks) {
+        precursor.addDependentTask(t);
+        LOG.debug("Added {}:{} as a precursor of {}:{}",
+            precursor.getClass(), precursor.getId(), t.getClass(), t.getId());
       }
     }
-    return null;
+    dbsUpdated.putAll(messageHandler.databasesUpdated());
+    tablesUpdated.putAll(messageHandler.tablesUpdated());
+    inputs.addAll(messageHandler.readEntities());
+    outputs.addAll(messageHandler.writeEntities());
+    return tasks;
   }
 
-  private Map<Integer, List<ExprNodeGenericFuncDesc>> genPartSpecs(Table table,
-      List<Map<String, String>> partitions) throws SemanticException {
-    Map<Integer, List<ExprNodeGenericFuncDesc>> partSpecs =
-        new HashMap<Integer, List<ExprNodeGenericFuncDesc>>();
-    int partPrefixLength = 0;
-    if ((partitions != null) && (partitions.size() > 0)) {
-      partPrefixLength = partitions.get(0).size();
-      // pick the length of the first ptn, we expect all ptns listed to have the same number of
-      // key-vals.
-    }
-    List<ExprNodeGenericFuncDesc> ptnDescs = new ArrayList<ExprNodeGenericFuncDesc>();
-    for (Map<String, String> ptn : partitions) {
-      // convert each key-value-map to appropriate expression.
-      ExprNodeGenericFuncDesc expr = null;
-      for (Map.Entry<String, String> kvp : ptn.entrySet()) {
-        String key = kvp.getKey();
-        Object val = kvp.getValue();
-        String type = table.getPartColByName(key).getType();
-        ;
-        PrimitiveTypeInfo pti = TypeInfoFactory.getPrimitiveTypeInfo(type);
-        ExprNodeColumnDesc column = new ExprNodeColumnDesc(pti, key, null, true);
-        ExprNodeGenericFuncDesc op =
-            DDLSemanticAnalyzer
-                .makeBinaryPredicate("=", column, new ExprNodeConstantDesc(pti, val));
-        expr = (expr == null) ? op : DDLSemanticAnalyzer.makeBinaryPredicate("and", expr, op);
+  private boolean existEmptyDb(String dbName) throws InvalidOperationException, HiveException {
+    Hive hiveDb = Hive.get();
+    Database db = hiveDb.getDatabase(dbName);
+    if (null != db) {
+      List<String> allTables = hiveDb.getAllTables(dbName);
+      List<String> allFunctions = hiveDb.getFunctions(dbName, "*");
+      if (!allTables.isEmpty()) {
+        throw new InvalidOperationException(
+                "Database " + db.getName() + " is not empty. One or more tables exist.");
       }
-      if (expr != null) {
-        ptnDescs.add(expr);
+      if (!allFunctions.isEmpty()) {
+        throw new InvalidOperationException(
+                "Database " + db.getName() + " is not empty. One or more functions exist.");
       }
+
+      return true;
     }
-    if (ptnDescs.size() > 0) {
-      partSpecs.put(partPrefixLength, ptnDescs);
-    }
-    return partSpecs;
+
+    return false;
   }
 
   private void analyzeDatabaseLoad(String dbName, FileSystem fs, FileStatus dir)
@@ -1225,7 +518,7 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
       // associated with that
       // Then, we iterate over all subdirs, and create table imports for each.
 
-      EximUtil.ReadMetaData rv = new EximUtil.ReadMetaData();
+      MetaData rv = new MetaData();
       try {
         rv = EximUtil.readMetaData(fs, new Path(dir.getPath(), EximUtil.METADATA_NAME));
       } catch (IOException e) {
@@ -1246,27 +539,87 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
         dbName = dbObj.getName();
       }
 
-      CreateDatabaseDesc createDbDesc = new CreateDatabaseDesc();
-      createDbDesc.setName(dbName);
-      createDbDesc.setComment(dbObj.getDescription());
-      createDbDesc.setDatabaseProperties(dbObj.getParameters());
-      // note that we do not set location - for repl load, we want that auto-created.
+      REPL_STATE_LOG.info("Repl Load: Started analyzing Repl Load for DB: {} from Dump Dir: {}, Dump Type: BOOTSTRAP",
+                          dbName, dir.getPath().toUri().toString());
 
-      createDbDesc.setIfNotExists(false);
-      // If it exists, we want this to be an error condition. Repl Load is not intended to replace a
-      // db.
-      // TODO: we might revisit this in create-drop-recreate cases, needs some thinking on.
-      Task<? extends Serializable> createDbTask = TaskFactory.get(new DDLWork(inputs, outputs, createDbDesc), conf);
-      rootTasks.add(createDbTask);
+      Task<? extends Serializable> dbRootTask = null;
+      if (existEmptyDb(dbName)) {
+        AlterDatabaseDesc alterDbDesc = new AlterDatabaseDesc(dbName, dbObj.getParameters(), null);
+        dbRootTask = TaskFactory.get(new DDLWork(inputs, outputs, alterDbDesc), conf);
+      } else {
+        CreateDatabaseDesc createDbDesc = new CreateDatabaseDesc();
+        createDbDesc.setName(dbName);
+        createDbDesc.setComment(dbObj.getDescription());
+        createDbDesc.setDatabaseProperties(dbObj.getParameters());
+        // note that we do not set location - for repl load, we want that auto-created.
 
+        createDbDesc.setIfNotExists(false);
+        // If it exists, we want this to be an error condition. Repl Load is not intended to replace a
+        // db.
+        // TODO: we might revisit this in create-drop-recreate cases, needs some thinking on.
+        dbRootTask = TaskFactory.get(new DDLWork(inputs, outputs, createDbDesc), conf);
+      }
+
+      rootTasks.add(dbRootTask);
       FileStatus[] dirsInDbPath = fs.listStatus(dir.getPath(), EximUtil.getDirectoryFilter(fs));
 
-      for (FileStatus tableDir : dirsInDbPath) {
+      for (FileStatus tableDir : Collections2.filter(Arrays.asList(dirsInDbPath), new TableDirPredicate())) {
         analyzeTableLoad(
-            dbName, null, tableDir.getPath().toUri().toString(), createDbTask, null, null);
+            dbName, null, tableDir.getPath().toUri().toString(), dbRootTask, null, null);
+        REPL_STATE_LOG.info("Repl Load: Analyzed table/view/partition load from path {}",
+                            tableDir.getPath().toUri().toString());
       }
+
+      //Function load
+      Path functionMetaDataRoot = new Path(dir.getPath(), FUNCTIONS_ROOT_DIR_NAME);
+      if (fs.exists(functionMetaDataRoot)) {
+        List<FileStatus> functionDirectories =
+            Arrays.asList(fs.listStatus(functionMetaDataRoot, EximUtil.getDirectoryFilter(fs)));
+        for (FileStatus functionDir : functionDirectories) {
+          analyzeFunctionLoad(dbName, functionDir, dbRootTask);
+          REPL_STATE_LOG.info("Repl Load: Analyzed function load from path {}",
+                              functionDir.getPath().toUri().toString());
+        }
+      }
+
+      REPL_STATE_LOG.info("Repl Load: Completed analyzing Repl Load for DB: {} and created import (DDL/COPY/MOVE) tasks",
+              dbName);
     } catch (Exception e) {
       throw new SemanticException(e);
+    }
+  }
+
+  private static class TableDirPredicate implements Predicate<FileStatus> {
+    @Override
+    public boolean apply(FileStatus fileStatus) {
+      return !fileStatus.getPath().getName().contains(FUNCTIONS_ROOT_DIR_NAME);
+    }
+  }
+
+  private void analyzeFunctionLoad(String dbName, FileStatus functionDir,
+      Task<? extends Serializable> createDbTask) throws IOException, SemanticException {
+    URI fromURI = EximUtil
+        .getValidatedURI(conf, stripQuotes(functionDir.getPath().toUri().toString()));
+    Path fromPath = new Path(fromURI.getScheme(), fromURI.getAuthority(), fromURI.getPath());
+
+    try {
+      CreateFunctionHandler handler = new CreateFunctionHandler();
+      List<Task<? extends Serializable>> tasksList = handler.handle(
+          new MessageHandler.Context(
+              dbName, null, fromPath.toString(), createDbTask, null, conf, db,
+              null, LOG)
+      );
+
+      tasksList.forEach(task -> {
+        createDbTask.addDependentTask(task);
+        LOG.debug("Added {}:{} as a precursor of {}:{}",
+            createDbTask.getClass(), createDbTask.getId(), task.getClass(),
+            task.getId());
+
+      });
+      inputs.addAll(handler.readEntities());
+    } catch (Exception e) {
+      throw new SemanticException(ErrorMsg.INVALID_PATH.getMsg(), e);
     }
   }
 
@@ -1359,7 +712,7 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
     prepareReturnValues(Collections.singletonList(replLastId), "last_repl_id#string");
     setFetchTask(createFetchTask("last_repl_id#string"));
     LOG.debug("ReplicationSemanticAnalyzer.analyzeReplStatus: writing repl.last.id={} out to {}",
-        String.valueOf(replLastId), ctx.getResFile());
+        String.valueOf(replLastId), ctx.getResFile(), conf);
   }
 
   private void prepareReturnValues(List<String> values, String schema) throws SemanticException {
@@ -1368,63 +721,6 @@ public class ReplicationSemanticAnalyzer extends BaseSemanticAnalyzer {
       LOG.debug("    > " + s);
     }
     ctx.setResFile(ctx.getLocalTmpPath());
-    writeOutput(values, ctx.getResFile());
-  }
-
-  private void writeOutput(List<String> values, Path outputFile) throws SemanticException {
-    FileSystem fs = null;
-    DataOutputStream outStream = null;
-    try {
-      fs = outputFile.getFileSystem(conf);
-      outStream = fs.create(outputFile);
-      outStream.writeBytes((values.get(0) == null ? Utilities.nullStringOutput : values.get(0)));
-      for (int i = 1; i < values.size(); i++) {
-        outStream.write(Utilities.tabCode);
-        outStream.writeBytes((values.get(i) == null ? Utilities.nullStringOutput : values.get(i)));
-      }
-      outStream.write(Utilities.newLineCode);
-    } catch (IOException e) {
-      throw new SemanticException(e);
-    } finally {
-      IOUtils.closeStream(outStream);
-    }
-  }
-
-  private ReplicationSpec getNewReplicationSpec() throws SemanticException {
-    try {
-      ReplicationSpec rspec = getNewReplicationSpec("replv2", "will-be-set");
-      rspec.setCurrentReplicationState(String.valueOf(db.getMSC()
-          .getCurrentNotificationEventId().getEventId()));
-      return rspec;
-    } catch (Exception e) {
-      throw new SemanticException(e); // TODO : simple wrap & rethrow for now, clean up with error codes
-    }
-  }
-
-  // Use for specifying object state as well as event state
-  private ReplicationSpec getNewReplicationSpec(String evState, String objState) throws SemanticException {
-    return new ReplicationSpec(true, false, evState, objState, false, true, false);
-  }
-
-  // Use for replication states focussed on event only, where the obj state will be the event state
-  private ReplicationSpec getNewEventOnlyReplicationSpec(String evState) throws SemanticException {
-    return getNewReplicationSpec(evState, evState);
-  }
-
-  private Iterable<? extends String> matchesTbl(String dbName, String tblPattern)
-      throws HiveException {
-    if (tblPattern == null) {
-      return db.getAllTables(dbName);
-    } else {
-      return db.getTablesByPattern(dbName, tblPattern);
-    }
-  }
-
-  private Iterable<? extends String> matchesDb(String dbPattern) throws HiveException {
-    if (dbPattern == null) {
-      return db.getAllDatabases();
-    } else {
-      return db.getDatabasesByPattern(dbPattern);
-    }
+    Utils.writeOutput(values, ctx.getResFile(), conf);
   }
 }

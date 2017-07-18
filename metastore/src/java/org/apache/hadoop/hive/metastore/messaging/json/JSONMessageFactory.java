@@ -104,8 +104,8 @@ public class JSONMessageFactory extends MessageFactory {
   }
 
   @Override
-  public AlterTableMessage buildAlterTableMessage(Table before, Table after) {
-    return new JSONAlterTableMessage(MS_SERVER_URL, MS_SERVICE_PRINCIPAL, before, after, now());
+  public AlterTableMessage buildAlterTableMessage(Table before, Table after, boolean isTruncateOp) {
+    return new JSONAlterTableMessage(MS_SERVER_URL, MS_SERVICE_PRINCIPAL, before, after, isTruncateOp, now());
   }
 
   @Override
@@ -123,8 +123,8 @@ public class JSONMessageFactory extends MessageFactory {
 
   @Override
   public AlterPartitionMessage buildAlterPartitionMessage(Table table, Partition before,
-      Partition after) {
-    return new JSONAlterPartitionMessage(MS_SERVER_URL, MS_SERVICE_PRINCIPAL, table, before, after,
+      Partition after, boolean isTruncateOp) {
+    return new JSONAlterPartitionMessage(MS_SERVER_URL, MS_SERVICE_PRINCIPAL, table, before, after, isTruncateOp,
         now());
   }
 
@@ -161,10 +161,9 @@ public class JSONMessageFactory extends MessageFactory {
   }
 
   @Override
-  public InsertMessage buildInsertMessage(String db, String table, Map<String, String> partKeyVals,
-      Iterator<String> fileIter) {
-    return new JSONInsertMessage(MS_SERVER_URL, MS_SERVICE_PRINCIPAL, db, table, partKeyVals,
-        fileIter, now());
+  public InsertMessage buildInsertMessage(Table tableObj, Partition partObj,
+                                          boolean replace, Iterator<String> fileIter) {
+    return new JSONInsertMessage(MS_SERVER_URL, MS_SERVICE_PRINCIPAL, tableObj, partObj, replace, fileIter, now());
   }
 
   private long now() {
@@ -298,5 +297,4 @@ public class JSONMessageFactory extends MessageFactory {
     };
     return getTObjs(Iterables.transform(jsonArrayIterator, textExtractor), objClass);
   }
-
 }

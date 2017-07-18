@@ -17,21 +17,26 @@
  */
 package org.apache.hadoop.hive.cli.control;
 
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import com.google.common.base.Strings;
+import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.conf.HiveConfUtil;
+import org.apache.hadoop.hive.ql.QTestProcessExecResult;
 import org.apache.hadoop.hive.ql.hooks.PreExecutePrinter;
-import org.apache.hive.beeline.qfile.QFile;
-import org.apache.hive.beeline.qfile.QFile.QFileBuilder;
-import org.apache.hive.beeline.qfile.QFileBeeLineClient;
-import org.apache.hive.beeline.qfile.QFileBeeLineClient.QFileClientBuilder;
+import org.apache.hive.beeline.ConvertedOutputFile.Converter;
+import org.apache.hive.beeline.QFile;
+import org.apache.hive.beeline.QFile.QFileBuilder;
+import org.apache.hive.beeline.QFileBeeLineClient;
+import org.apache.hive.beeline.QFileBeeLineClient.QFileClientBuilder;
 import org.apache.hive.jdbc.miniHS2.MiniHS2;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 
 import java.io.File;
 import java.io.IOException;
+import java.sql.SQLException;
 import java.util.HashMap;
 
 public class CoreBeeLineDriver extends CliAdapter {
@@ -44,21 +49,43 @@ public class CoreBeeLineDriver extends CliAdapter {
   private final File testDataDirectory;
   private final File testScriptDirectory;
   private boolean overwrite = false;
+  private boolean rewriteSourceTables = true;
   private MiniHS2 miniHS2;
   private QFileClientBuilder clientBuilder;
   private QFileBuilder fileBuilder;
-
-//  private static QTestUtil.QTestSetup miniZKCluster = null;
 
   public CoreBeeLineDriver(AbstractCliConfig testCliConfig) {
     super(testCliConfig);
     queryDirectory = new File(testCliConfig.getQueryDirectory());
     logDirectory = new File(testCliConfig.getLogDir());
     resultsDirectory = new File(testCliConfig.getResultsDir());
-    testDataDirectory = new File(hiveRootDirectory, "data" + File.separator + "files");
+    String testDataDirectoryName = System.getProperty("test.data.dir");
+    if (testDataDirectoryName == null) {
+      testDataDirectory = new File(hiveRootDirectory, "data" + File.separator + "files");
+    } else {
+      testDataDirectory = new File(testDataDirectoryName);
+    }
     testScriptDirectory = new File(hiveRootDirectory, "data" + File.separator + "scripts");
     initScript = new File(testScriptDirectory, testCliConfig.getInitScript());
     cleanupScript = new File(testScriptDirectory, testCliConfig.getCleanupScript());
+  }
+
+  private static MiniHS2 createMiniServer() throws Exception {
+    HiveConf hiveConf = new HiveConf();
+    // We do not need Zookeeper at the moment
+    hiveConf.set(HiveConf.ConfVars.HIVE_LOCK_MANAGER.varname,
+        "org.apache.hadoop.hive.ql.lockmgr.EmbeddedLockManager");
+
+    MiniHS2 miniHS2 = new MiniHS2.Builder()
+        .withConf(hiveConf)
+        .cleanupLocalDirOnStartup(true)
+        .build();
+
+    miniHS2.start(new HashMap<String, String>());
+
+    System.err.println(HiveConfUtil.dumpConfig(miniHS2.getHiveConf()));
+
+    return miniHS2;
   }
 
   @Override
@@ -68,43 +95,35 @@ public class CoreBeeLineDriver extends CliAdapter {
     if (testOutputOverwrite != null && "true".equalsIgnoreCase(testOutputOverwrite)) {
       overwrite = true;
     }
+    String testRewriteSourceTables = System.getProperty("test.rewrite.source.tables");
+    if (testRewriteSourceTables != null && "false".equalsIgnoreCase(testRewriteSourceTables)) {
+      rewriteSourceTables = false;
+    }
 
-    HiveConf hiveConf = new HiveConf();
-    // We do not need Zookeeper at the moment
-    hiveConf.set(HiveConf.ConfVars.HIVE_LOCK_MANAGER.varname,
-        "org.apache.hadoop.hive.ql.lockmgr.EmbeddedLockManager");
-
-    // But if we need later we can enable it with this, or create one ourself
-//    miniZKCluster = new QTestUtil.QTestSetup();
-//    miniZKCluster.preTest(hiveConf);
-
-    hiveConf.logVars(System.err);
-    System.err.flush();
-
-    miniHS2 = new MiniHS2.Builder().withConf(hiveConf).cleanupLocalDirOnStartup(true).build();
-
-    miniHS2.start(new HashMap<String, String>());
+    String beeLineUrl = System.getProperty("test.beeline.url");
+    if (StringUtils.isEmpty(beeLineUrl)) {
+      miniHS2 = createMiniServer();
+      beeLineUrl = miniHS2.getJdbcURL();
+    }
 
     clientBuilder = new QFileClientBuilder()
         .setJdbcDriver("org.apache.hive.jdbc.HiveDriver")
-        .setJdbcUrl(miniHS2.getJdbcURL())
-        .setUsername("user")
-        .setPassword("password");
+        .setJdbcUrl(beeLineUrl)
+        .setUsername(System.getProperty("test.beeline.user", "user"))
+        .setPassword(System.getProperty("test.beeline.password", "password"));
 
     fileBuilder = new QFileBuilder()
-        .setHiveRootDirectory(hiveRootDirectory)
         .setLogDirectory(logDirectory)
         .setQueryDirectory(queryDirectory)
         .setResultsDirectory(resultsDirectory)
-        .setScratchDirectoryString(hiveConf.getVar(HiveConf.ConfVars.SCRATCHDIR))
-        .setWarehouseDirectoryString(hiveConf.getVar(HiveConf.ConfVars.METASTOREWAREHOUSE));
+        .setRewriteSourceTables(rewriteSourceTables);
 
     runInfraScript(initScript, new File(logDirectory, "init.beeline"),
         new File(logDirectory, "init.raw"));
   }
 
   protected void runInfraScript(File script, File beeLineOutput, File log)
-      throws IOException {
+      throws IOException, SQLException {
     try (QFileBeeLineClient beeLineClient = clientBuilder.getClient(beeLineOutput)) {
       beeLineClient.execute(
           new String[]{
@@ -113,7 +132,11 @@ public class CoreBeeLineDriver extends CliAdapter {
             "set test.script.dir=" + testScriptDirectory + ";",
             "!run " + script,
           },
-          log);
+          log,
+          Converter.NONE);
+    } catch (Exception e) {
+      throw new SQLException("Error running infra script: " + script
+          + "\nCheck the following logs for details:\n - " + beeLineOutput + "\n - " + log, e);
     }
   }
 
@@ -125,37 +148,47 @@ public class CoreBeeLineDriver extends CliAdapter {
     if (miniHS2 != null) {
       miniHS2.stop();
     }
-    //    if (miniZKCluster != null) {
-    //      miniZKCluster.tearDown();
-    //    }
   }
 
   public void runTest(QFile qFile) throws Exception {
     try (QFileBeeLineClient beeLineClient = clientBuilder.getClient(qFile.getLogFile())) {
       long startTime = System.currentTimeMillis();
       System.err.println(">>> STARTED " + qFile.getName());
-      assertTrue("QFile execution failed, see logs for details", beeLineClient.execute(qFile));
 
-      long endTime = System.currentTimeMillis();
-      System.err.println(">>> EXECUTED " + qFile.getName() + ":" + (endTime - startTime) / 1000
-          + "s");
+      beeLineClient.execute(qFile);
+
+      long queryEndTime = System.currentTimeMillis();
+      System.err.println(">>> EXECUTED " + qFile.getName() + ": " + (queryEndTime - startTime)
+          + "ms");
 
       qFile.filterOutput();
       long filterEndTime = System.currentTimeMillis();
-      System.err.println(">>> FILTERED " + qFile.getName() + ":" + (filterEndTime - endTime) / 1000
-          + "s");
+      System.err.println(">>> FILTERED " + qFile.getName() + ": " + (filterEndTime - queryEndTime)
+          + "ms");
 
       if (!overwrite) {
-        if (qFile.compareResults()) {
+        QTestProcessExecResult result = qFile.compareResults();
+
+        long compareEndTime = System.currentTimeMillis();
+        System.err.println(">>> COMPARED " + qFile.getName() + ": "
+            + (compareEndTime - filterEndTime) + "ms");
+        if (result.getReturnCode() == 0) {
           System.err.println(">>> PASSED " + qFile.getName());
         } else {
           System.err.println(">>> FAILED " + qFile.getName());
-          fail("Failed diff");
+          String messageText = "Client result comparison failed with error code = "
+              + result.getReturnCode() + " while executing fname=" + qFile.getName() + "\n";
+          String messageBody = Strings.isNullOrEmpty(result.getCapturedOutput()) ?
+              qFile.getDebugHint() : result.getCapturedOutput();
+          fail(messageText + messageBody);
         }
       } else {
         qFile.overwriteResults();
         System.err.println(">>> PASSED " + qFile.getName());
       }
+    } catch (Exception e) {
+      throw new Exception("Exception running or analyzing the results of the query file: " + qFile
+          + "\n" + qFile.getDebugHint(), e);
     }
   }
 

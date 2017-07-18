@@ -85,16 +85,18 @@ STAGE PLANS:
                   className: VectorSelectOperator
                   native: true
                   projectedOutputColumns: [1, 2]
-                  selectExpressions: VectorUDFAdaptor(UDFToInteger(key)) -> 2:int
+                  selectExpressions: CastStringToLong(col 0) -> 2:int
               Statistics: Num rows: 500 Data size: 99000 Basic stats: COMPLETE Column stats: NONE
               Group By Operator
                 aggregations: sum(_col1), count()
                 Group By Vectorization:
                     aggregators: VectorUDAFSumLong(col 2) -> bigint, VectorUDAFCountStar(*) -> bigint
                     className: VectorGroupByOperator
+                    groupByMode: HASH
                     vectorOutput: true
                     keyExpressions: col 1
                     native: false
+                    vectorProcessingMode: HASH
                     projectedOutputColumns: [0, 1]
                 keys: _col0 (type: char(20))
                 mode: hash
@@ -107,8 +109,8 @@ STAGE PLANS:
                   Reduce Sink Vectorization:
                       className: VectorReduceSinkOperator
                       native: false
-                      nativeConditionsMet: hive.vectorized.execution.reducesink.new.enabled IS true, No buckets IS true, No DISTINCT columns IS true, BinarySortableSerDe for keys IS true, LazyBinarySerDe for values IS true
-                      nativeConditionsNotMet: hive.execution.engine mr IN [tez, spark] IS false, No TopN IS false, Uniform Hash IS false
+                      nativeConditionsMet: hive.vectorized.execution.reducesink.new.enabled IS true, No PTF TopN IS true, No DISTINCT columns IS true, BinarySortableSerDe for keys IS true, LazyBinarySerDe for values IS true
+                      nativeConditionsNotMet: hive.execution.engine mr IN [tez, spark] IS false
                   Statistics: Num rows: 500 Data size: 99000 Basic stats: COMPLETE Column stats: NONE
                   TopN Hash Memory Usage: 0.1
                   value expressions: _col1 (type: bigint), _col2 (type: bigint)
@@ -119,7 +121,7 @@ STAGE PLANS:
           groupByVectorOutput: true
           inputFileFormats: org.apache.hadoop.hive.ql.io.orc.OrcInputFormat
           allNative: false
-          usesVectorUDFAdaptor: true
+          usesVectorUDFAdaptor: false
           vectorized: true
       Reduce Vectorization:
           enabled: false
@@ -129,8 +131,10 @@ STAGE PLANS:
         Group By Operator
           aggregations: sum(VALUE._col0), count(VALUE._col1)
           Group By Vectorization:
+              groupByMode: MERGEPARTIAL
               vectorOutput: false
               native: false
+              vectorProcessingMode: NONE
               projectedOutputColumns: null
           keys: KEY._col0 (type: char(20))
           mode: mergepartial
@@ -147,16 +151,29 @@ STAGE PLANS:
     Map Reduce
       Map Operator Tree:
           TableScan
+            TableScan Vectorization:
+                native: true
+                projectedOutputColumns: [0, 1, 2]
             Reduce Output Operator
               key expressions: _col0 (type: char(20))
               sort order: +
+              Reduce Sink Vectorization:
+                  className: VectorReduceSinkOperator
+                  native: false
+                  nativeConditionsMet: hive.vectorized.execution.reducesink.new.enabled IS true, No PTF TopN IS true, No DISTINCT columns IS true, BinarySortableSerDe for keys IS true, LazyBinarySerDe for values IS true
+                  nativeConditionsNotMet: hive.execution.engine mr IN [tez, spark] IS false
               Statistics: Num rows: 250 Data size: 49500 Basic stats: COMPLETE Column stats: NONE
               TopN Hash Memory Usage: 0.1
               value expressions: _col1 (type: bigint), _col2 (type: bigint)
+      Execution mode: vectorized
       Map Vectorization:
-          enabled: false
-          enabledConditionsNotMet: hive.vectorized.use.vector.serde.deserialize IS false
+          enabled: true
+          enabledConditionsMet: hive.vectorized.use.vector.serde.deserialize IS true
+          groupByVectorOutput: true
           inputFileFormats: org.apache.hadoop.mapred.SequenceFileInputFormat
+          allNative: false
+          usesVectorUDFAdaptor: false
+          vectorized: true
       Reduce Vectorization:
           enabled: false
           enableConditionsMet: hive.vectorized.execution.reduce.enabled IS true
@@ -263,16 +280,18 @@ STAGE PLANS:
                   className: VectorSelectOperator
                   native: true
                   projectedOutputColumns: [1, 2]
-                  selectExpressions: VectorUDFAdaptor(UDFToInteger(key)) -> 2:int
+                  selectExpressions: CastStringToLong(col 0) -> 2:int
               Statistics: Num rows: 500 Data size: 99000 Basic stats: COMPLETE Column stats: NONE
               Group By Operator
                 aggregations: sum(_col1), count()
                 Group By Vectorization:
                     aggregators: VectorUDAFSumLong(col 2) -> bigint, VectorUDAFCountStar(*) -> bigint
                     className: VectorGroupByOperator
+                    groupByMode: HASH
                     vectorOutput: true
                     keyExpressions: col 1
                     native: false
+                    vectorProcessingMode: HASH
                     projectedOutputColumns: [0, 1]
                 keys: _col0 (type: char(20))
                 mode: hash
@@ -285,8 +304,8 @@ STAGE PLANS:
                   Reduce Sink Vectorization:
                       className: VectorReduceSinkOperator
                       native: false
-                      nativeConditionsMet: hive.vectorized.execution.reducesink.new.enabled IS true, No buckets IS true, No DISTINCT columns IS true, BinarySortableSerDe for keys IS true, LazyBinarySerDe for values IS true
-                      nativeConditionsNotMet: hive.execution.engine mr IN [tez, spark] IS false, No TopN IS false, Uniform Hash IS false
+                      nativeConditionsMet: hive.vectorized.execution.reducesink.new.enabled IS true, No PTF TopN IS true, No DISTINCT columns IS true, BinarySortableSerDe for keys IS true, LazyBinarySerDe for values IS true
+                      nativeConditionsNotMet: hive.execution.engine mr IN [tez, spark] IS false
                   Statistics: Num rows: 500 Data size: 99000 Basic stats: COMPLETE Column stats: NONE
                   TopN Hash Memory Usage: 0.1
                   value expressions: _col1 (type: bigint), _col2 (type: bigint)
@@ -297,7 +316,7 @@ STAGE PLANS:
           groupByVectorOutput: true
           inputFileFormats: org.apache.hadoop.hive.ql.io.orc.OrcInputFormat
           allNative: false
-          usesVectorUDFAdaptor: true
+          usesVectorUDFAdaptor: false
           vectorized: true
       Reduce Vectorization:
           enabled: false
@@ -307,8 +326,10 @@ STAGE PLANS:
         Group By Operator
           aggregations: sum(VALUE._col0), count(VALUE._col1)
           Group By Vectorization:
+              groupByMode: MERGEPARTIAL
               vectorOutput: false
               native: false
+              vectorProcessingMode: NONE
               projectedOutputColumns: null
           keys: KEY._col0 (type: char(20))
           mode: mergepartial
@@ -325,16 +346,29 @@ STAGE PLANS:
     Map Reduce
       Map Operator Tree:
           TableScan
+            TableScan Vectorization:
+                native: true
+                projectedOutputColumns: [0, 1, 2]
             Reduce Output Operator
               key expressions: _col0 (type: char(20))
               sort order: -
+              Reduce Sink Vectorization:
+                  className: VectorReduceSinkOperator
+                  native: false
+                  nativeConditionsMet: hive.vectorized.execution.reducesink.new.enabled IS true, No PTF TopN IS true, No DISTINCT columns IS true, BinarySortableSerDe for keys IS true, LazyBinarySerDe for values IS true
+                  nativeConditionsNotMet: hive.execution.engine mr IN [tez, spark] IS false
               Statistics: Num rows: 250 Data size: 49500 Basic stats: COMPLETE Column stats: NONE
               TopN Hash Memory Usage: 0.1
               value expressions: _col1 (type: bigint), _col2 (type: bigint)
+      Execution mode: vectorized
       Map Vectorization:
-          enabled: false
-          enabledConditionsNotMet: hive.vectorized.use.vector.serde.deserialize IS false
+          enabled: true
+          enabledConditionsMet: hive.vectorized.use.vector.serde.deserialize IS true
+          groupByVectorOutput: true
           inputFileFormats: org.apache.hadoop.mapred.SequenceFileInputFormat
+          allNative: false
+          usesVectorUDFAdaptor: false
+          vectorized: true
       Reduce Vectorization:
           enabled: false
           enableConditionsMet: hive.vectorized.execution.reduce.enabled IS true

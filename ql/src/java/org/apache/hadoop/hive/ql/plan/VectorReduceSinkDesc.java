@@ -64,12 +64,15 @@ public class VectorReduceSinkDesc extends AbstractVectorDesc  {
 
   private boolean isVectorizationReduceSinkNativeEnabled;
   private String engine;
-  private boolean hasBuckets;
-  private boolean hasTopN;
-  private boolean useUniformHash;
+  private boolean isEmptyKey;
+  private boolean isEmptyValue;
+  private boolean isEmptyBuckets;
+  private boolean isEmptyPartitions;
+  private boolean hasPTFTopN;
   private boolean hasDistinctColumns;
   private boolean isKeyBinarySortable;
   private boolean isValueLazyBinary;
+  private boolean isUnexpectedCondition;
 
   /*
    * The following conditions are for native Vector ReduceSink.
@@ -86,23 +89,35 @@ public class VectorReduceSinkDesc extends AbstractVectorDesc  {
   public String getEngine() {
     return engine;
   }
-  public void setHasBuckets(boolean hasBuckets) {
-    this.hasBuckets = hasBuckets;
-  }  
-  public boolean getHasBuckets() {
-    return hasBuckets;
+  public void setIsEmptyKey(boolean isEmptyKey) {
+    this.isEmptyKey = isEmptyKey;
   }
-  public void setHasTopN(boolean hasTopN) {
-    this.hasTopN = hasTopN;
+  public boolean getIsEmptyKey() {
+    return isEmptyKey;
   }
-  public boolean getHasTopN() {
-    return hasTopN;
+  public void setIsEmptyValue(boolean isEmptyValue) {
+    this.isEmptyValue = isEmptyValue;
   }
-  public void setUseUniformHash(boolean useUniformHash) {
-    this.useUniformHash = useUniformHash;
+  public boolean getIsEmptyValue() {
+    return isEmptyValue;
   }
-  public boolean getUseUniformHash() {
-    return useUniformHash;
+  public void setIsEmptyBuckets(boolean isEmptyBuckets) {
+    this.isEmptyBuckets = isEmptyBuckets;
+  }
+  public boolean getIsEmptyBuckets() {
+    return isEmptyBuckets;
+  }
+  public void setIsEmptyPartitions(boolean isEmptyPartitions) {
+    this.isEmptyPartitions = isEmptyPartitions;
+  }
+  public boolean getIsEmptyPartitions() {
+    return isEmptyPartitions;
+  }
+  public void setHasPTFTopN(boolean hasPTFTopN) {
+    this.hasPTFTopN = hasPTFTopN;
+  }
+  public boolean getHasPTFTopN() {
+    return hasPTFTopN;
   }
   public void setHasDistinctColumns(boolean hasDistinctColumns) {
     this.hasDistinctColumns = hasDistinctColumns;
@@ -121,5 +136,11 @@ public class VectorReduceSinkDesc extends AbstractVectorDesc  {
   }
   public boolean getIsValueLazyBinary() {
     return isValueLazyBinary;
+  }
+  public void setIsUnexpectedCondition(boolean isUnexpectedCondition) {
+    this.isUnexpectedCondition = isUnexpectedCondition;
+  }
+  public boolean getIsUnexpectedCondition() {
+    return isUnexpectedCondition;
   }
 }

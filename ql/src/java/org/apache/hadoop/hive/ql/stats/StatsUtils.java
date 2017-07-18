@@ -75,6 +75,7 @@ import org.apache.hadoop.hive.ql.util.JavaDataModel;
 import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.objectinspector.ConstantObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Category;
 import org.apache.hadoop.hive.serde2.objectinspector.StandardConstantListObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.StandardConstantMapObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.StandardConstantStructObjectInspector;
@@ -99,7 +100,10 @@ import org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableLongObjec
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableShortObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableStringObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableTimestampObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableTimestampTZObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.CharTypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.hive.serde2.typeinfo.VarcharTypeInfo;
 import org.apache.hadoop.io.BytesWritable;
@@ -393,7 +397,7 @@ public class StatsUtils {
     return scaledSelectivity;
   }
 
-  private static long getRangeDelta(ColStatistics.Range range) {
+  public static long getRangeDelta(ColStatistics.Range range) {
     if (range.minValue != null && range.maxValue != null) {
       return (range.maxValue.longValue() - range.minValue.longValue());
     }
@@ -740,7 +744,8 @@ public class StatsUtils {
     } else if (colTypeLowerCase.equals(serdeConstants.BINARY_TYPE_NAME)) {
       cs.setAvgColLen(csd.getBinaryStats().getAvgColLen());
       cs.setNumNulls(csd.getBinaryStats().getNumNulls());
-    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME)) {
+    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME) ||
+        colTypeLowerCase.equals(serdeConstants.TIMESTAMPTZ_TYPE_NAME)) {
       cs.setAvgColLen(JavaDataModel.get().lengthOfTimestamp());
     } else if (colTypeLowerCase.startsWith(serdeConstants.DECIMAL_TYPE_NAME)) {
       cs.setAvgColLen(JavaDataModel.get().lengthOfDecimal());
@@ -1039,7 +1044,8 @@ public class StatsUtils {
         || colTypeLowerCase.equals(serdeConstants.INTERVAL_YEAR_MONTH_TYPE_NAME)
         || colTypeLowerCase.equals("long")) {
       return JavaDataModel.get().primitive2();
-    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME)) {
+    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME) ||
+        colTypeLowerCase.equals(serdeConstants.TIMESTAMPTZ_TYPE_NAME)) {
       return JavaDataModel.get().lengthOfTimestamp();
     } else if (colTypeLowerCase.equals(serdeConstants.DATE_TYPE_NAME)) {
       return JavaDataModel.get().lengthOfDate();
@@ -1076,7 +1082,8 @@ public class StatsUtils {
       return JavaDataModel.get().lengthForByteArrayOfSize(length);
     } else if (colTypeLowerCase.equals(serdeConstants.BOOLEAN_TYPE_NAME)) {
       return JavaDataModel.get().lengthForBooleanArrayOfSize(length);
-    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME)) {
+    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME) ||
+        colTypeLowerCase.equals(serdeConstants.TIMESTAMPTZ_TYPE_NAME)) {
       return JavaDataModel.get().lengthForTimestampArrayOfSize(length);
     } else if (colTypeLowerCase.equals(serdeConstants.DATE_TYPE_NAME)) {
       return JavaDataModel.get().lengthForDateArrayOfSize(length);
@@ -1161,7 +1168,8 @@ public class StatsUtils {
       return JavaDataModel.get().primitive2();
     } else if (oi instanceof WritableShortObjectInspector) {
       return JavaDataModel.get().primitive1();
-    } else if (oi instanceof WritableTimestampObjectInspector) {
+    } else if (oi instanceof WritableTimestampObjectInspector ||
+        oi instanceof WritableTimestampTZObjectInspector) {
       return JavaDataModel.get().lengthOfTimestamp();
     }
 
@@ -1540,7 +1548,8 @@ public class StatsUtils {
         } else if (colTypeLowerCase.equals(serdeConstants.BINARY_TYPE_NAME)) {
           int acl = (int) Math.round(cs.getAvgColLen());
           sizeOf = JavaDataModel.get().lengthForByteArrayOfSize(acl);
-        } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME)) {
+        } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME) ||
+            colTypeLowerCase.equals(serdeConstants.TIMESTAMPTZ_TYPE_NAME)) {
           sizeOf = JavaDataModel.get().lengthOfTimestamp();
         } else if (colTypeLowerCase.startsWith(serdeConstants.DECIMAL_TYPE_NAME)) {
           sizeOf = JavaDataModel.get().lengthOfDecimal();
@@ -1631,57 +1640,45 @@ public class StatsUtils {
     }
   }
 
-  public static int getNumBitVectorsForNDVEstimation(HiveConf conf) throws SemanticException {
-    int numBitVectors;
-    float percentageError = HiveConf.getFloatVar(conf, HiveConf.ConfVars.HIVE_STATS_NDV_ERROR);
-
-    if (percentageError < 0.0) {
-      throw new SemanticException("hive.stats.ndv.error can't be negative");
-    } else if (percentageError <= 2.4) {
-      numBitVectors = 1024;
-      LOG.info("Lowest error achievable is 2.4% but error requested is " + percentageError + "%");
-      LOG.info("Choosing 1024 bit vectors..");
-    } else if (percentageError <= 3.4 ) {
-      numBitVectors = 1024;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 1024 bit vectors..");
-    } else if (percentageError <= 4.8) {
-      numBitVectors = 512;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 512 bit vectors..");
-     } else if (percentageError <= 6.8) {
-      numBitVectors = 256;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 256 bit vectors..");
-    } else if (percentageError <= 9.7) {
-      numBitVectors = 128;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 128 bit vectors..");
-    } else if (percentageError <= 13.8) {
-      numBitVectors = 64;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 64 bit vectors..");
-    } else if (percentageError <= 19.6) {
-      numBitVectors = 32;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 32 bit vectors..");
-    } else if (percentageError <= 28.2) {
-      numBitVectors = 16;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 16 bit vectors..");
-    } else if (percentageError <= 40.9) {
-      numBitVectors = 8;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 8 bit vectors..");
-    } else if (percentageError <= 61.0) {
-      numBitVectors = 4;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 4 bit vectors..");
-    } else {
-      numBitVectors = 2;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 2 bit vectors..");
+  public static boolean hasDiscreteRange(ColStatistics colStat) {
+    if (colStat.getRange() != null) {
+      TypeInfo colType = TypeInfoUtils.getTypeInfoFromTypeString(colStat.getColumnType());
+      if (colType.getCategory() == Category.PRIMITIVE) {
+        PrimitiveTypeInfo pti = (PrimitiveTypeInfo) colType;
+        switch (pti.getPrimitiveCategory()) {
+          case BOOLEAN:
+          case BYTE:
+          case SHORT:
+          case INT:
+          case LONG:
+            return true;
+          default:
+            break;
+        }
+      }
     }
-    return numBitVectors;
+    return false;
+  }
+
+  public static Range combineRange(Range range1, Range range2) {
+    if (   range1.minValue != null && range1.maxValue != null
+        && range2.minValue != null && range2.maxValue != null) {
+      long min1 = range1.minValue.longValue();
+      long max1 = range1.maxValue.longValue();
+      long min2 = range2.minValue.longValue();
+      long max2 = range2.maxValue.longValue();
+
+      if (   (min1 < min2 && max1 < max2)
+          || (min1 > min2 && max1 > max2)) {
+        // No overlap between the two ranges
+        return null;
+      } else {
+        // There is an overlap of ranges - create combined range.
+        return new ColStatistics.Range(
+            Math.min(min1, min2),
+            Math.max(max1,  max2));
+      }
+    }
+    return null;
   }
 }

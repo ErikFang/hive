@@ -34,7 +34,7 @@ STAGE PLANS:
               input format: org.apache.hadoop.mapred.TextInputFormat
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
-                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
+                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"col1":"true"}}
                 bucket_count -1
                 column.name.delimiter ,
                 columns col1
@@ -222,6 +222,7 @@ Table Type:         	MANAGED_TABLE
 Table Parameters:	 	 
 	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	1                   
+	numPartitions       	1                   
 	numRows             	6                   
 	rawDataSize         	6                   
 	totalSize           	171                 

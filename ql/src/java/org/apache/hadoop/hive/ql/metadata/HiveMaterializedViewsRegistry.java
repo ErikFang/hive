@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.calcite.adapter.druid.DruidQuery;
 import org.apache.calcite.adapter.druid.DruidSchema;
 import org.apache.calcite.adapter.druid.DruidTable;
+import org.apache.calcite.adapter.druid.LocalInterval;
 import org.apache.calcite.jdbc.JavaTypeFactoryImpl;
 import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelOptMaterialization;
@@ -59,7 +60,6 @@ import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveTableScan;
 import org.apache.hadoop.hive.ql.optimizer.calcite.translator.TypeConverter;
 import org.apache.hadoop.hive.ql.parse.ASTNode;
 import org.apache.hadoop.hive.ql.parse.CalcitePlanner;
-import org.apache.hadoop.hive.ql.parse.ParseDriver;
 import org.apache.hadoop.hive.ql.parse.ParseUtils;
 import org.apache.hadoop.hive.ql.parse.PrunedPartitionList;
 import org.apache.hadoop.hive.ql.parse.RowResolver;
@@ -69,7 +69,6 @@ import org.apache.hadoop.hive.serde2.objectinspector.StructField;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
-import org.joda.time.Interval;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -310,7 +309,7 @@ public final class HiveMaterializedViewsRegistry {
         }
         metrics.add(field.getName());
       }
-      List<Interval> intervals = Arrays.asList(DruidTable.DEFAULT_INTERVAL);
+      List<LocalInterval> intervals = Arrays.asList(DruidTable.DEFAULT_INTERVAL);
 
       DruidTable druidTable = new DruidTable(new DruidSchema(address, address, false),
           dataSource, RelDataTypeImpl.proto(rowType), metrics, DruidTable.DEFAULT_TIMESTAMP_COLUMN, intervals);
@@ -329,7 +328,8 @@ public final class HiveMaterializedViewsRegistry {
   private static RelNode parseQuery(String viewQuery) {
     try {
       final ASTNode node = ParseUtils.parse(viewQuery);
-      final QueryState qs = new QueryState(SessionState.get().getConf());
+      final QueryState qs =
+          new QueryState.Builder().withHiveConf(SessionState.get().getConf()).build();
       CalcitePlanner analyzer = new CalcitePlanner(qs);
       analyzer.initCtx(new Context(SessionState.get().getConf()));
       analyzer.init(false);

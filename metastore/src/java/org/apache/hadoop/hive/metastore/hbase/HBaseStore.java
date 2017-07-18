@@ -22,7 +22,6 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.cache.CacheLoader;
 
 import org.apache.commons.lang.StringUtils;
-import org.apache.hadoop.hive.common.ObjectPair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -65,7 +64,9 @@ import org.apache.hadoop.hive.metastore.api.PrivilegeGrantInfo;
 import org.apache.hadoop.hive.metastore.api.Role;
 import org.apache.hadoop.hive.metastore.api.RolePrincipalGrant;
 import org.apache.hadoop.hive.metastore.api.SQLForeignKey;
+import org.apache.hadoop.hive.metastore.api.SQLNotNullConstraint;
 import org.apache.hadoop.hive.metastore.api.SQLPrimaryKey;
+import org.apache.hadoop.hive.metastore.api.SQLUniqueConstraint;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.hadoop.hive.metastore.api.Type;
@@ -2692,6 +2693,8 @@ public class HBaseStore implements RawStore {
 
   @Override
   public List<SQLPrimaryKey> getPrimaryKeys(String db_name, String tbl_name) throws MetaException {
+    db_name = HiveStringUtils.normalizeIdentifier(db_name);
+    tbl_name = HiveStringUtils.normalizeIdentifier(tbl_name);
     boolean commit = false;
     openTransaction();
     try {
@@ -2710,6 +2713,10 @@ public class HBaseStore implements RawStore {
   public List<SQLForeignKey> getForeignKeys(String parent_db_name, String parent_tbl_name,
                                             String foreign_db_name, String foreign_tbl_name)
       throws MetaException {
+    parent_db_name = parent_db_name!=null?HiveStringUtils.normalizeIdentifier(parent_db_name):null;
+    parent_tbl_name = parent_tbl_name!=null?HiveStringUtils.normalizeIdentifier(parent_tbl_name):null;
+    foreign_db_name = HiveStringUtils.normalizeIdentifier(foreign_db_name);
+    foreign_tbl_name = HiveStringUtils.normalizeIdentifier(foreign_tbl_name);
     boolean commit = false;
     openTransaction();
     try {
@@ -2733,15 +2740,56 @@ public class HBaseStore implements RawStore {
   }
 
   @Override
+  public List<SQLUniqueConstraint> getUniqueConstraints(String db_name, String tbl_name)
+          throws MetaException {
+    db_name = HiveStringUtils.normalizeIdentifier(db_name);
+    tbl_name = HiveStringUtils.normalizeIdentifier(tbl_name);
+    boolean commit = false;
+    openTransaction();
+    try {
+      List<SQLUniqueConstraint> uk = getHBase().getUniqueConstraint(db_name, tbl_name);
+      commit = true;
+      return uk;
+    } catch (IOException e) {
+      LOG.error("Unable to get unique constraint", e);
+      throw new MetaException("Error reading db " + e.getMessage());
+    } finally {
+      commitOrRoleBack(commit);
+    }
+  }
+
+  @Override
+  public List<SQLNotNullConstraint> getNotNullConstraints(String db_name, String tbl_name)
+          throws MetaException {
+    db_name = HiveStringUtils.normalizeIdentifier(db_name);
+    tbl_name = HiveStringUtils.normalizeIdentifier(tbl_name);
+    boolean commit = false;
+    openTransaction();
+    try {
+      List<SQLNotNullConstraint> nn = getHBase().getNotNullConstraint(db_name, tbl_name);
+      commit = true;
+      return nn;
+    } catch (IOException e) {
+      LOG.error("Unable to get not null constraint", e);
+      throw new MetaException("Error reading db " + e.getMessage());
+    } finally {
+      commitOrRoleBack(commit);
+    }
+  }
+
+  @Override
   public void createTableWithConstraints(Table tbl, List<SQLPrimaryKey> primaryKeys,
-                                         List<SQLForeignKey> foreignKeys)
-      throws InvalidObjectException, MetaException {
+      List<SQLForeignKey> foreignKeys, List<SQLUniqueConstraint> uniqueConstraints,
+      List<SQLNotNullConstraint> notNullConstraints)
+          throws InvalidObjectException, MetaException {
     boolean commit = false;
     openTransaction();
     try {
       createTable(tbl);
       if (primaryKeys != null) addPrimaryKeys(primaryKeys);
       if (foreignKeys != null) addForeignKeys(foreignKeys);
+      if (uniqueConstraints != null) addUniqueConstraints(uniqueConstraints);
+      if (notNullConstraints != null) addNotNullConstraints(notNullConstraints);
       commit = true;
     } finally {
       commitOrRoleBack(commit);
@@ -2754,6 +2802,9 @@ public class HBaseStore implements RawStore {
     // This is something of pain, since we have to search both primary key and foreign key to see
     // which they want to drop.
     boolean commit = false;
+    dbName = HiveStringUtils.normalizeIdentifier(dbName);
+    tableName = HiveStringUtils.normalizeIdentifier(tableName);
+    constraintName = HiveStringUtils.normalizeIdentifier(constraintName);
     openTransaction();
     try {
       List<SQLPrimaryKey> pk = getHBase().getPrimaryKey(dbName, tableName);
@@ -2778,6 +2829,20 @@ public class HBaseStore implements RawStore {
         return;
       }
 
+      List<SQLUniqueConstraint> uk = getHBase().getUniqueConstraint(dbName, tableName);
+      if (uk != null && uk.size() > 0 && uk.get(0).getUk_name().equals(constraintName)) {
+        getHBase().deleteUniqueConstraint(dbName, tableName);
+        commit = true;
+        return;
+      }
+
+      List<SQLNotNullConstraint> nn = getHBase().getNotNullConstraint(dbName, tableName);
+      if (nn != null && nn.size() > 0 && nn.get(0).getNn_name().equals(constraintName)) {
+        getHBase().deleteNotNullConstraint(dbName, tableName);
+        commit = true;
+        return;
+      }
+
       commit = true;
       throw new NoSuchObjectException("Unable to find constraint named " + constraintName +
         " on table " + tableNameForErrorMsg(dbName, tableName));
@@ -2793,6 +2858,12 @@ public class HBaseStore implements RawStore {
   @Override
   public void addPrimaryKeys(List<SQLPrimaryKey> pks) throws InvalidObjectException, MetaException {
     boolean commit = false;
+    for (SQLPrimaryKey pk : pks) {
+      pk.setTable_db(HiveStringUtils.normalizeIdentifier(pk.getTable_db()));
+      pk.setTable_name(HiveStringUtils.normalizeIdentifier(pk.getTable_name()));
+      pk.setColumn_name(HiveStringUtils.normalizeIdentifier(pk.getColumn_name()));
+      pk.setPk_name(HiveStringUtils.normalizeIdentifier(pk.getPk_name()));
+    }
     openTransaction();
     try {
       List<SQLPrimaryKey> currentPk =
@@ -2814,6 +2885,13 @@ public class HBaseStore implements RawStore {
   @Override
   public void addForeignKeys(List<SQLForeignKey> fks) throws InvalidObjectException, MetaException {
     boolean commit = false;
+    for (SQLForeignKey fk : fks) {
+      fk.setPktable_db(HiveStringUtils.normalizeIdentifier(fk.getPktable_db()));
+      fk.setPktable_name(HiveStringUtils.normalizeIdentifier(fk.getPktable_name()));
+      fk.setFktable_db(HiveStringUtils.normalizeIdentifier(fk.getFktable_db()));
+      fk.setFktable_name(HiveStringUtils.normalizeIdentifier(fk.getFktable_name()));
+      fk.setFk_name(HiveStringUtils.normalizeIdentifier(fk.getFk_name()));
+    }
     openTransaction();
     try {
       // Fetch the existing keys (if any) and add in these new ones
@@ -2829,5 +2907,58 @@ public class HBaseStore implements RawStore {
     } finally {
       commitOrRoleBack(commit);
     }
+  }
+
+  public void addUniqueConstraints(List<SQLUniqueConstraint> uks) throws InvalidObjectException, MetaException {
+    boolean commit = false;
+    for (SQLUniqueConstraint uk : uks) {
+      uk.setTable_db(HiveStringUtils.normalizeIdentifier(uk.getTable_db()));
+      uk.setTable_name(HiveStringUtils.normalizeIdentifier(uk.getTable_name()));
+      uk.setColumn_name(HiveStringUtils.normalizeIdentifier(uk.getColumn_name()));
+      uk.setUk_name(HiveStringUtils.normalizeIdentifier(uk.getUk_name()));
+    }
+    openTransaction();
+    try {
+      getHBase().putUniqueConstraints(uks);
+      commit = true;
+    } catch (IOException e) {
+      LOG.error("Error writing unique constraints", e);
+      throw new MetaException("Error writing unique constraints: " + e.getMessage());
+    } finally {
+      commitOrRoleBack(commit);
+    }
+  }
+
+  @Override
+  public void addNotNullConstraints(List<SQLNotNullConstraint> nns) throws InvalidObjectException, MetaException {
+    boolean commit = false;
+    for (SQLNotNullConstraint nn : nns) {
+      nn.setTable_db(HiveStringUtils.normalizeIdentifier(nn.getTable_db()));
+      nn.setTable_name(HiveStringUtils.normalizeIdentifier(nn.getTable_name()));
+      nn.setColumn_name(HiveStringUtils.normalizeIdentifier(nn.getColumn_name()));
+      nn.setNn_name(HiveStringUtils.normalizeIdentifier(nn.getNn_name()));
+    }
+    openTransaction();
+    try {
+      getHBase().putNotNullConstraints(nns);
+      commit = true;
+    } catch (IOException e) {
+      LOG.error("Error writing not null constraints", e);
+      throw new MetaException("Error writing not null constraints: " + e.getMessage());
+    } finally {
+      commitOrRoleBack(commit);
+    }
+  }
+
+  @Override
+  public Map<String, List<ColumnStatisticsObj>> getColStatsForTablePartitions(String dbName,
+      String tableName) throws MetaException, NoSuchObjectException {
+    // TODO: see if it makes sense to implement this here
+    return null;
+  }
+
+  @Override
+  public String getMetastoreDbUuid() throws MetaException {
+    throw new MetaException("Get metastore DB uuid is not implemented");
   }
 }

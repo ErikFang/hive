@@ -163,7 +163,7 @@ public class TypeCheckProcFactory {
     if (colInfo != null) {
       desc = new ExprNodeColumnDesc(colInfo);
       ASTNode source = input.getExpressionSource(expr);
-      if (source != null) {
+      if (source != null && ctx.getUnparseTranslator() != null) {
         ctx.getUnparseTranslator().addCopyTranslation(expr, source);
       }
       return desc;
@@ -714,16 +714,12 @@ public class TypeCheckProcFactory {
   public static class DefaultExprProcessor implements NodeProcessor {
 
     static HashMap<Integer, String> specialUnaryOperatorTextHashMap;
-    static HashMap<Integer, String> specialFunctionTextHashMap;
     static HashMap<Integer, String> conversionFunctionTextHashMap;
     static HashSet<Integer> windowingTokens;
     static {
       specialUnaryOperatorTextHashMap = new HashMap<Integer, String>();
       specialUnaryOperatorTextHashMap.put(HiveParser.PLUS, "positive");
       specialUnaryOperatorTextHashMap.put(HiveParser.MINUS, "negative");
-      specialFunctionTextHashMap = new HashMap<Integer, String>();
-      specialFunctionTextHashMap.put(HiveParser.TOK_ISNULL, "isnull");
-      specialFunctionTextHashMap.put(HiveParser.TOK_ISNOTNULL, "isnotnull");
       conversionFunctionTextHashMap = new HashMap<Integer, String>();
       conversionFunctionTextHashMap.put(HiveParser.TOK_BOOLEAN,
           serdeConstants.BOOLEAN_TYPE_NAME);
@@ -751,6 +747,8 @@ public class TypeCheckProcFactory {
           serdeConstants.DATE_TYPE_NAME);
       conversionFunctionTextHashMap.put(HiveParser.TOK_TIMESTAMP,
           serdeConstants.TIMESTAMP_TYPE_NAME);
+      conversionFunctionTextHashMap.put(HiveParser.TOK_TIMESTAMPTZ,
+          serdeConstants.TIMESTAMPTZ_TYPE_NAME);
       conversionFunctionTextHashMap.put(HiveParser.TOK_INTERVAL_YEAR_MONTH,
           serdeConstants.INTERVAL_YEAR_MONTH_TYPE_NAME);
       conversionFunctionTextHashMap.put(HiveParser.TOK_INTERVAL_DAY_TIME,
@@ -806,7 +804,7 @@ public class TypeCheckProcFactory {
         if (expr.getChildCount() == 1) {
           funcText = specialUnaryOperatorTextHashMap.get(expr.getType());
         }
-        if (funcText == null) {
+        if(funcText == null) {
           funcText = expr.getText();
         }
       } else {
@@ -815,7 +813,6 @@ public class TypeCheckProcFactory {
         // special dictionary.
         assert (expr.getChildCount() >= 1);
         int funcType = ((ASTNode) expr.getChild(0)).getType();
-        funcText = specialFunctionTextHashMap.get(funcType);
         if (funcText == null) {
           funcText = conversionFunctionTextHashMap.get(funcType);
         }
@@ -1302,7 +1299,6 @@ public class TypeCheckProcFactory {
 
       // Return nulls for conversion operators
       if (conversionFunctionTextHashMap.keySet().contains(expr.getType())
-          || specialFunctionTextHashMap.keySet().contains(expr.getType())
           || expr.getToken().getType() == HiveParser.CharSetName
           || expr.getToken().getType() == HiveParser.CharSetLiteral) {
         return null;

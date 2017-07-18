@@ -41,6 +41,7 @@ import org.apache.hadoop.hive.ql.io.IOContextMap;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -219,7 +220,18 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
           TezCommonUtils.convertJobTokenToBytes(jobToken));
       Multimap<String, String> startedInputsMap = createStartedInputMap(vertex);
 
-      final UserGroupInformation taskOwner = fragmentInfo.getQueryInfo().getUmbilicalUgi();
+      final UserGroupInformation taskOwner;
+      if (!vertex.getIsExternalSubmission()) {
+        taskOwner = fragmentInfo.getQueryInfo().getUmbilicalUgi();
+      } else {
+        // Temporary, till the external interface makes use of a single connection per
+        // instance.
+        taskOwner = UserGroupInformation.createRemoteUser(vertex.getTokenIdentifier());
+        taskOwner.addToken(jobToken);
+        final InetSocketAddress address =
+            NetUtils.createSocketAddrForHost(request.getAmHost(), request.getAmPort());
+        SecurityUtil.setTokenService(jobToken, address);
+      }
       if (LOG.isDebugEnabled()) {
         LOG.debug("taskOwner hashCode:" + taskOwner.hashCode());
       }
@@ -274,6 +286,7 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
           return result;
         } finally {
           FileSystem.closeAllForUGI(fsTaskUgi);
+          fragmentInfo.getQueryInfo().returnUmbilicalUgi(taskOwner);
           LOG.info("ExecutionTime for Container: " + request.getContainerIdString() + "=" +
                   runtimeWatch.stop().elapsedMillis());
           if (LOG.isDebugEnabled()) {
@@ -382,7 +395,15 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
   }
 
   public boolean canFinish() {
-    return fragmentInfo.canFinish();
+    return QueryFragmentInfo.canFinish(fragmentInfo);
+  }
+
+  public boolean canFinishForPriority() {
+    return fragmentInfo.canFinishForPriority();
+  }
+
+  public void updateCanFinishForPriority(boolean value) {
+    fragmentInfo.setCanFinishForPriority(value);
   }
 
   private static Multimap<String, String> createStartedInputMap(SignableVertexSpec vertex) {
@@ -407,6 +428,7 @@ public class TaskRunnerCallable extends CallableWithNdc<TaskRunner2Result> {
       taskReporter.shutdown();
     }
     if (umbilical != null) {
+      // TODO: Can this be moved out of the main callback path
       RPC.stopProxy(umbilical);
     }
   }

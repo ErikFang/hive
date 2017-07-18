@@ -272,6 +272,8 @@ public final class FunctionRegistry {
     system.registerGenericUDF("initcap", GenericUDFInitCap.class);
 
     system.registerUDF("like", UDFLike.class, true);
+    system.registerGenericUDF("likeany", GenericUDFLikeAny.class);
+    system.registerGenericUDF("likeall", GenericUDFLikeAll.class);
     system.registerGenericUDF("rlike", GenericUDFRegExp.class);
     system.registerGenericUDF("regexp", GenericUDFRegExp.class);
     system.registerUDF("regexp_replace", UDFRegExpReplace.class, false);
@@ -357,6 +359,10 @@ public final class FunctionRegistry {
 
     system.registerGenericUDF("isnull", GenericUDFOPNull.class);
     system.registerGenericUDF("isnotnull", GenericUDFOPNotNull.class);
+    system.registerGenericUDF("istrue", GenericUDFOPTrue.class);
+    system.registerGenericUDF("isnottrue", GenericUDFOPNotTrue.class);
+    system.registerGenericUDF("isfalse", GenericUDFOPFalse.class);
+    system.registerGenericUDF("isnotfalse", GenericUDFOPNotFalse.class);
 
     system.registerGenericUDF("if", GenericUDFIf.class);
     system.registerGenericUDF("in", GenericUDFIn.class);
@@ -396,6 +402,7 @@ public final class FunctionRegistry {
 
     system.registerGenericUDF(serdeConstants.DATE_TYPE_NAME, GenericUDFToDate.class);
     system.registerGenericUDF(serdeConstants.TIMESTAMP_TYPE_NAME, GenericUDFTimestamp.class);
+    system.registerGenericUDF(serdeConstants.TIMESTAMPTZ_TYPE_NAME, GenericUDFToTimestampTZ.class);
     system.registerGenericUDF(serdeConstants.INTERVAL_YEAR_MONTH_TYPE_NAME, GenericUDFToIntervalYearMonth.class);
     system.registerGenericUDF(serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME, GenericUDFToIntervalDayTime.class);
     system.registerGenericUDF(serdeConstants.BINARY_TYPE_NAME, GenericUDFToBinary.class);
@@ -457,6 +464,7 @@ public final class FunctionRegistry {
     system.registerGenericUDF("struct", GenericUDFStruct.class);
     system.registerGenericUDF("named_struct", GenericUDFNamedStruct.class);
     system.registerGenericUDF("create_union", GenericUDFUnion.class);
+    system.registerGenericUDF("extract_union", GenericUDFExtractUnion.class);
 
     system.registerGenericUDF("case", GenericUDFCase.class);
     system.registerGenericUDF("when", GenericUDFWhen.class);
@@ -480,6 +488,7 @@ public final class FunctionRegistry {
     system.registerGenericUDF("greatest", GenericUDFGreatest.class);
     system.registerGenericUDF("least", GenericUDFLeast.class);
     system.registerGenericUDF("cardinality_violation", GenericUDFCardinalityViolation.class);
+    system.registerGenericUDF("width_bucket", GenericUDFWidthBucket.class);
 
     system.registerGenericUDF("from_utc_timestamp", GenericUDFFromUtcTimestamp.class);
     system.registerGenericUDF("to_utc_timestamp", GenericUDFToUtcTimestamp.class);
@@ -1488,6 +1497,20 @@ public final class FunctionRegistry {
   }
 
   /**
+   * Returns whether the fn is an exact equality comparison.
+   */
+  public static boolean isEq(GenericUDF fn) {
+    return fn instanceof GenericUDFOPEqual;
+  }
+
+  /**
+   * Returns whether the fn is an exact non-equality comparison.
+   */
+  public static boolean isNeq(GenericUDF fn) {
+    return fn instanceof GenericUDFOPNotEqual;
+  }
+
+  /**
    * Returns whether the exprNodeDesc is a node of "positive".
    */
   public static boolean isOpPositive(ExprNodeDesc desc) {
@@ -1514,7 +1537,8 @@ public final class FunctionRegistry {
         udfClass == UDFToShort.class || udfClass == UDFToString.class ||
         udfClass == GenericUDFToVarchar.class || udfClass == GenericUDFToChar.class ||
         udfClass == GenericUDFTimestamp.class || udfClass == GenericUDFToBinary.class ||
-        udfClass == GenericUDFToDate.class  || udfClass == GenericUDFToDecimal.class;
+        udfClass == GenericUDFToDate.class || udfClass == GenericUDFToDecimal.class ||
+        udfClass == GenericUDFToTimestampTZ.class;
   }
 
   /**

@@ -25,7 +25,6 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,7 +37,6 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.FileUtils;
-import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.TableType;
@@ -60,6 +58,7 @@ import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.InvalidTableException;
 import org.apache.hadoop.hive.ql.metadata.Table;
+import org.apache.hadoop.hive.ql.parse.repl.load.MetaData;
 import org.apache.hadoop.hive.ql.plan.AddPartitionDesc;
 import org.apache.hadoop.hive.ql.plan.ImportTableDesc;
 import org.apache.hadoop.hive.ql.plan.DDLWork;
@@ -80,10 +79,14 @@ public class ImportSemanticAnalyzer extends BaseSemanticAnalyzer {
     super(queryState);
   }
 
-  // FIXME : Note that the tableExists flag as used by Auth is kinda a hack and
+  // Note that the tableExists flag as used by Auth is kinda a hack and
   // assumes only 1 table will ever be imported - this assumption is broken by
-  // REPL LOAD. We need to fix this. Maybe by continuing the hack and replacing
-  // by a map, maybe by coming up with a better api for it.
+  // REPL LOAD.
+  //
+  // However, we've not chosen to expand this to a map of tables/etc, since
+  // we have expanded how auth works with REPL DUMP / REPL LOAD to simply
+  // require ADMIN privileges, rather than checking each object, which
+  // quickly becomes untenable, and even more so, costly on memory.
   private boolean tableExists = false;
 
   public boolean existsTable() {
@@ -186,7 +189,7 @@ public class ImportSemanticAnalyzer extends BaseSemanticAnalyzer {
     FileSystem fs = FileSystem.get(fromURI, x.getConf());
     x.getInputs().add(toReadEntity(fromPath, x.getConf()));
 
-    EximUtil.ReadMetaData rv = new EximUtil.ReadMetaData();
+    MetaData rv = new MetaData();
     try {
       rv =  EximUtil.readMetaData(fs, new Path(fromPath, EximUtil.METADATA_NAME));
     } catch (IOException e) {
@@ -413,7 +416,7 @@ public class ImportSemanticAnalyzer extends BaseSemanticAnalyzer {
           x.getOutputs(), addPartitionDesc), x.getConf());
       LoadTableDesc loadTableWork = new LoadTableDesc(tmpPath,
           Utilities.getTableDesc(table),
-          partSpec.getPartSpec(), true);
+          partSpec.getPartSpec(), replicationSpec.isReplace());
       loadTableWork.setInheritTableSpecs(false);
       Task<?> loadPartTask = TaskFactory.get(new MoveWork(
           x.getInputs(), x.getOutputs(), loadTableWork, null, false),
@@ -441,7 +444,7 @@ public class ImportSemanticAnalyzer extends BaseSemanticAnalyzer {
       } else {
         Database parentDb = x.getHive().getDatabase(tblDesc.getDatabaseName());
         tgtPath = new Path(
-            wh.getTablePath( parentDb, tblDesc.getTableName()),
+            wh.getDefaultTablePath( parentDb, tblDesc.getTableName()),
             Warehouse.makePartPath(partSpec.getPartSpec()));
       }
     } else {
@@ -505,7 +508,7 @@ public class ImportSemanticAnalyzer extends BaseSemanticAnalyzer {
       }
     }
 
-    // Next, we verify that the destination table is not offline, a view, or a non-native table
+    // Next, we verify that the destination table is not offline, or a non-native table
     EximUtil.validateTable(table);
 
     // If the import statement specified that we're importing to an external
@@ -768,7 +771,7 @@ public class ImportSemanticAnalyzer extends BaseSemanticAnalyzer {
           if (tblDesc.getLocation() != null) {
             tablePath = new Path(tblDesc.getLocation());
           } else {
-            tablePath = wh.getTablePath(parentDb, tblDesc.getTableName());
+            tablePath = wh.getDefaultTablePath(parentDb, tblDesc.getTableName());
           }
           FileSystem tgtFs = FileSystem.get(tablePath.toUri(), x.getConf());
           checkTargetLocationEmpty(tgtFs, tablePath, replicationSpec,x);
@@ -793,21 +796,6 @@ public class ImportSemanticAnalyzer extends BaseSemanticAnalyzer {
     Task dr = null;
     WriteEntity.WriteType lockType = WriteEntity.WriteType.DDL_NO_LOCK;
 
-    if ((table != null) && (isPartitioned(tblDesc) != table.isPartitioned())){
-      // If destination table exists, but is partitioned, and we think we're writing to an unpartitioned
-      // or if destination table exists, but is unpartitioned and we think we're writing to a partitioned
-      // table, then this can only happen because there are drops in the queue that are yet to be processed.
-      // So, we check the repl.last.id of the destination, and if it's newer, we no-op. If it's older, we
-      // drop and re-create.
-      if (replicationSpec.allowReplacementInto(table)){
-        dr = dropTableTask(table, x);
-        lockType = WriteEntity.WriteType.DDL_EXCLUSIVE;
-        table = null; // null it out so we go into the table re-create flow.
-      } else {
-        return; // noop out of here.
-      }
-    }
-
     // Normally, on import, trying to create a table or a partition in a db that does not yet exist
     // is a error condition. However, in the case of a REPL LOAD, it is possible that we are trying
     // to create tasks to create a table inside a db that as-of-now does not exist, but there is
@@ -819,9 +807,23 @@ public class ImportSemanticAnalyzer extends BaseSemanticAnalyzer {
         throw new SemanticException(ErrorMsg.DATABASE_NOT_EXISTS.getMsg(tblDesc.getDatabaseName()));
       }
     }
+
+    if (table != null) {
+      if (!replicationSpec.allowReplacementInto(table.getParameters())) {
+        // If the target table exists and is newer or same as current update based on repl.last.id, then just noop it.
+        return;
+      }
+    } else {
+      // If table doesn't exist, allow creating a new one only if the database state is older than the update.
+      if ((parentDb != null) && (!replicationSpec.allowReplacementInto(parentDb.getParameters()))) {
+        // If the target table exists and is newer or same as current update based on repl.last.id, then just noop it.
+        return;
+      }
+    }
+
     if (tblDesc.getLocation() == null) {
       if (!waitOnPrecursor){
-        tblDesc.setLocation(wh.getTablePath(parentDb, tblDesc.getTableName()).toString());
+        tblDesc.setLocation(wh.getDefaultTablePath(parentDb, tblDesc.getTableName()).toString());
       } else {
         tblDesc.setLocation(
             wh.getDnsPath(new Path(
@@ -833,16 +835,15 @@ public class ImportSemanticAnalyzer extends BaseSemanticAnalyzer {
       }
     }
 
-     /* Note: In the following section, Metadata-only import handling logic is
-        interleaved with regular repl-import logic. The rule of thumb being
-        followed here is that MD-only imports are essentially ALTERs. They do
-        not load data, and should not be "creating" any metadata - they should
-        be replacing instead. The only place it makes sense for a MD-only import
-        to create is in the case of a table that's been dropped and recreated,
-        or in the case of an unpartitioned table. In all other cases, it should
-        behave like a noop or a pure MD alter.
-     */
-
+    /* Note: In the following section, Metadata-only import handling logic is
+       interleaved with regular repl-import logic. The rule of thumb being
+       followed here is that MD-only imports are essentially ALTERs. They do
+       not load data, and should not be "creating" any metadata - they should
+       be replacing instead. The only place it makes sense for a MD-only import
+       to create is in the case of a table that's been dropped and recreated,
+       or in the case of an unpartitioned table. In all other cases, it should
+       behave like a noop or a pure MD alter.
+    */
     if (table == null) {
       // Either we're dropping and re-creating, or the table didn't exist, and we're creating.
 
@@ -890,7 +891,7 @@ public class ImportSemanticAnalyzer extends BaseSemanticAnalyzer {
           } else {
             // If replicating, then the partition already existing means we need to replace, maybe, if
             // the destination ptn's repl.last.id is older than the replacement's.
-            if (replicationSpec.allowReplacementInto(ptn)){
+            if (replicationSpec.allowReplacementInto(ptn.getParameters())){
               if (!replicationSpec.isMetadataOnly()){
                 x.getTasks().add(addSinglePartition(
                     fromURI, fs, tblDesc, table, wh, addPartitionDesc, replicationSpec, x));
@@ -916,12 +917,12 @@ public class ImportSemanticAnalyzer extends BaseSemanticAnalyzer {
         }
       } else {
         x.getLOG().debug("table non-partitioned");
-        if (!replicationSpec.allowReplacementInto(table)){
+        if (!replicationSpec.allowReplacementInto(table.getParameters())){
           return; // silently return, table is newer than our replacement.
         }
         if (!replicationSpec.isMetadataOnly()) {
           // repl-imports are replace-into unless the event is insert-into
-          loadTable(fromURI, table, !replicationSpec.isInsert(), new Path(fromURI), replicationSpec, x);
+          loadTable(fromURI, table, replicationSpec.isReplace(), new Path(fromURI), replicationSpec, x);
         } else {
           x.getTasks().add(alterTableTask(tblDesc, x, replicationSpec));
         }

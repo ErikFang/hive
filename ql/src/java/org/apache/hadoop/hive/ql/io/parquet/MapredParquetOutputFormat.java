@@ -18,10 +18,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
-import java.util.TimeZone;
 
-import org.apache.hadoop.hive.ql.io.parquet.serde.ParquetTableUtils;
-import org.apache.parquet.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FileSystem;
@@ -71,6 +68,15 @@ public class MapredParquetOutputFormat extends FileOutputFormat<NullWritable, Pa
     realOutputFormat.checkOutputSpecs(ShimLoader.getHadoopShims().getHCatShim().createJobContext(job, null));
   }
 
+  /**
+   *
+   * @param ignored Unused parameter
+   * @param job JobConf - expecting mandatory parameter PARQUET_HIVE_SCHEMA
+   * @param name Path to write to
+   * @param progress Progress
+   * @return
+   * @throws IOException
+   */
   @Override
   public RecordWriter<NullWritable, ParquetHiveRecord> getRecordWriter(
       final FileSystem ignored,
@@ -78,7 +84,7 @@ public class MapredParquetOutputFormat extends FileOutputFormat<NullWritable, Pa
       final String name,
       final Progressable progress
       ) throws IOException {
-    throw new RuntimeException("Should never be used");
+    return new ParquetRecordWriterWrapper(realOutputFormat, job, name, progress);
   }
 
   /**
@@ -116,7 +122,6 @@ public class MapredParquetOutputFormat extends FileOutputFormat<NullWritable, Pa
     }
 
     DataWritableWriteSupport.setSchema(HiveSchemaConverter.convert(columnNames, columnTypes), jobConf);
-    DataWritableWriteSupport.setTimeZone(getParquetWriterTimeZone(tableProperties), jobConf);
 
     return getParquerRecordWriterWrapper(realOutputFormat, jobConf, finalOutPath.toString(),
             progress,tableProperties);
@@ -131,22 +136,5 @@ public class MapredParquetOutputFormat extends FileOutputFormat<NullWritable, Pa
       ) throws IOException {
     return new ParquetRecordWriterWrapper(realOutputFormat, jobConf, finalOutPath.toString(),
             progress,tableProperties);
-  }
-
-  private TimeZone getParquetWriterTimeZone(Properties tableProperties) {
-    // PARQUET_INT96_WRITE_ZONE_PROPERTY is a table property used to detect what timezone
-    // conversion to use when writing Parquet timestamps.
-    String timeZoneID =
-        tableProperties.getProperty(ParquetTableUtils.PARQUET_INT96_WRITE_ZONE_PROPERTY);
-    if (!Strings.isNullOrEmpty(timeZoneID)) {
-      if (!Arrays.asList(TimeZone.getAvailableIDs()).contains(timeZoneID)) {
-        throw new IllegalStateException("Unexpected timezone id found for parquet int96 conversion: " + timeZoneID);
-      }
-      return TimeZone.getTimeZone(timeZoneID);
-    }
-
-    // If no timezone is defined in table properties, then adjust timestamps using
-    // PARQUET_INT96_NO_ADJUSTMENT_ZONE timezone
-    return TimeZone.getTimeZone(ParquetTableUtils.PARQUET_INT96_NO_ADJUSTMENT_ZONE);
   }
 }

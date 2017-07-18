@@ -102,6 +102,8 @@ public class LlapWebServices extends AbstractService {
       this.http = builder.build();
       this.http.addServlet("status", "/status", LlapStatusServlet.class);
       this.http.addServlet("peers", "/peers", LlapPeerRegistryServlet.class);
+      this.http.addServlet("iomem", "/iomem", LlapIoMemoryServlet.class);
+      this.http.addServlet("system", "/system", SystemConfigurationServlet.class);
     } catch (IOException e) {
       LOG.warn("LLAP web service failed to come up", e);
     }

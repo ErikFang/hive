@@ -48,7 +48,6 @@ import org.apache.hadoop.hive.ql.parse.ParseContext;
 import org.apache.hadoop.hive.ql.parse.PrunedPartitionList;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
-import org.apache.hadoop.hive.ql.plan.ExprNodeConstantDefaultDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeConstantDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeFieldDesc;
@@ -67,6 +66,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
+import org.apache.hadoop.hive.ql.plan.ExprNodeDescUtils;
 
 /**
  * The transformation step that does partition pruning.
@@ -378,7 +379,7 @@ public class PartitionPruner extends Transform {
       // list or struct fields.
       return new ExprNodeConstantDesc(expr.getTypeInfo(), null);
     }
-    if (expr instanceof ExprNodeColumnDesc) {
+    else if (expr instanceof ExprNodeColumnDesc) {
       String column = ((ExprNodeColumnDesc) expr).getColumn();
       if (!partCols.contains(column)) {
         // Column doesn't appear to be a partition column for the table.
@@ -386,10 +387,25 @@ public class PartitionPruner extends Transform {
       }
       referred.add(column);
     }
-    if (expr instanceof ExprNodeGenericFuncDesc) {
+    else if (expr instanceof ExprNodeGenericFuncDesc) {
       List<ExprNodeDesc> children = expr.getChildren();
       for (int i = 0; i < children.size(); ++i) {
-        children.set(i, removeNonPartCols(children.get(i), partCols, referred));
+        ExprNodeDesc other = removeNonPartCols(children.get(i), partCols, referred);
+        if (ExprNodeDescUtils.isNullConstant(other)) {
+          if (FunctionRegistry.isOpAnd(expr)) {
+            // partcol=... AND nonpartcol=...   is replaced with partcol=... AND TRUE
+            // which will be folded to partcol=...
+            // This cannot be done also for OR
+            Preconditions.checkArgument(expr.getTypeInfo().accept(TypeInfoFactory.booleanTypeInfo));
+            other = new ExprNodeConstantDesc(expr.getTypeInfo(), true);
+          } else {
+            // Functions like NVL, COALESCE, CASE can change a 
+            // NULL introduced by a nonpart column removal into a non-null
+            // and cause overaggressive prunning, missing data (incorrect result)
+            return new ExprNodeConstantDesc(expr.getTypeInfo(), null);
+          }
+        }
+        children.set(i, other);
       }
     }
     return expr;
@@ -554,7 +570,7 @@ public class PartitionPruner extends Transform {
         PrimitiveTypeInfo typeInfo = partColumnTypeInfos.get(i);
 
         if (partitionValue.equals(defaultPartitionName)) {
-          convertedValues.add(new ExprNodeConstantDefaultDesc(typeInfo, defaultPartitionName));
+          convertedValues.add(null); // Null for default partition.
         } else {
           Object o = ObjectInspectorConverters.getConverter(
               PrimitiveObjectInspectorFactory.javaStringObjectInspector,

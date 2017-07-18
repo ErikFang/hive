@@ -201,18 +201,27 @@ public class HiveStatement implements java.sql.Statement {
     warningChain = null;
   }
 
-  void closeClientOperation() throws SQLException {
+  /**
+   * Closes the statement if there is one running. Do not change the the flags.
+   * @throws SQLException If there is an error closing the statement
+   */
+  private void closeStatementIfNeeded() throws SQLException {
     try {
       if (stmtHandle != null) {
         TCloseOperationReq closeReq = new TCloseOperationReq(stmtHandle);
         TCloseOperationResp closeResp = client.CloseOperation(closeReq);
         Utils.verifySuccessWithInfo(closeResp.getStatus());
+        stmtHandle = null;
       }
     } catch (SQLException e) {
       throw e;
     } catch (Exception e) {
       throw new SQLException(e.toString(), "08S01", e);
     }
+  }
+
+  void closeClientOperation() throws SQLException {
+    closeStatementIfNeeded();
     isQueryClosed = true;
     isExecuteStatementFailed = false;
     stmtHandle = null;
@@ -295,8 +304,7 @@ public class HiveStatement implements java.sql.Statement {
   private void runAsyncOnServer(String sql) throws SQLException {
     checkConnection("execute");
 
-    closeClientOperation();
-    initFlags();
+    reInitState();
 
     TExecuteStatementReq execReq = new TExecuteStatementReq(sessHandle, sql);
     /**
@@ -315,9 +323,11 @@ public class HiveStatement implements java.sql.Statement {
       isExecuteStatementFailed = false;
     } catch (SQLException eS) {
       isExecuteStatementFailed = true;
+      isLogBeingGenerated = false;
       throw eS;
     } catch (Exception ex) {
       isExecuteStatementFailed = true;
+      isLogBeingGenerated = false;
       throw new SQLException(ex.toString(), "08S01", ex);
     }
   }
@@ -411,7 +421,12 @@ public class HiveStatement implements java.sql.Statement {
     }
   }
 
-  private void initFlags() {
+  /**
+   * Close statement if needed, and reset the flags.
+   * @throws SQLException
+   */
+  private void reInitState() throws SQLException {
+    closeStatementIfNeeded();
     isCancelled = false;
     isQueryClosed = false;
     isLogBeingGenerated = true;
@@ -914,10 +929,6 @@ public class HiveStatement implements java.sql.Statement {
         if (isQueryClosed) {
           throw new ClosedOrCancelledStatementException("Method getQueryLog() failed. The " +
               "statement has been closed or cancelled.");
-        }
-        if (isExecuteStatementFailed) {
-          throw new SQLException("Method getQueryLog() failed. Because the stmtHandle in " +
-              "HiveStatement is null and the statement execution might fail.");
         } else {
           return logs;
         }

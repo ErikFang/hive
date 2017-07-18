@@ -27,6 +27,7 @@ import java.util.regex.Pattern;
 import org.antlr.runtime.tree.Tree;
 import org.apache.hadoop.hive.ql.parse.ASTNode;
 import org.apache.hadoop.hive.ql.parse.ASTNodeOrigin;
+import org.apache.hadoop.hive.ql.plan.AlterTableDesc.AlterTableTypes;
 
 /**
  * List of all error messages.
@@ -217,7 +218,7 @@ public enum ErrorMsg {
   ALTER_COMMAND_FOR_VIEWS(10131, "To alter a view you need to use the ALTER VIEW command."),
   ALTER_COMMAND_FOR_TABLES(10132, "To alter a base table you need to use the ALTER TABLE command."),
   ALTER_VIEW_DISALLOWED_OP(10133, "Cannot use this form of ALTER on a view"),
-  ALTER_TABLE_NON_NATIVE(10134, "ALTER TABLE cannot be used for a non-native table"),
+  ALTER_TABLE_NON_NATIVE(10134, "ALTER TABLE can only be used for " + AlterTableTypes.nonNativeTableAllowedTypes + " to a non-native table "),
   SORTMERGE_MAPJOIN_FAILED(10135,
       "Sort merge bucketed join could not be performed. " +
       "If you really want to perform the operation, either set " +
@@ -381,7 +382,7 @@ public enum ErrorMsg {
   DBTXNMGR_REQUIRES_CONCURRENCY(10264,
       "To use DbTxnManager you must set hive.support.concurrency=true"),
   TXNMGR_NOT_ACID(10265, "This command is not allowed on an ACID table {0}.{1} with a non-ACID transaction manager", true),
-
+  LOAD_DATA_ON_ACID_TABLE(10266, "LOAD DATA... statement is not supported on transactional table {0}.", true),
   LOCK_NO_SUCH_LOCK(10270, "No record of lock {0} could be found, " +
       "may have timed out", true),
   LOCK_REQUEST_UNSUPPORTED(10271, "Current transaction manager does not " +
@@ -410,8 +411,6 @@ public enum ErrorMsg {
   INSERT_CANNOT_CREATE_TEMP_FILE(10293, "Unable to create temp file for insert values "),
   ACID_OP_ON_NONACID_TXNMGR(10294, "Attempt to do update or delete using transaction manager that" +
       " does not support these operations."),
-  NO_INSERT_OVERWRITE_WITH_ACID(10295, "INSERT OVERWRITE not allowed on table with OutputFormat " +
-      "that implements AcidOutputFormat while transaction manager that supports ACID is in use"),
   VALUES_TABLE_CONSTRUCTOR_NOT_SUPPORTED(10296,
       "Values clause with table constructor not yet supported"),
   ACID_OP_ON_NONACID_TABLE(10297, "Attempt to do update or delete on table {0} that does not use " +
@@ -451,12 +450,14 @@ public enum ErrorMsg {
   CLASSPATH_ERROR(10323, "Classpath error"),
   IMPORT_SEMANTIC_ERROR(10324, "Import Semantic Analyzer Error"),
   INVALID_FK_SYNTAX(10325, "Invalid Foreign Key syntax"),
-  INVALID_PK_SYNTAX(10326, "Invalid Primary Key syntax"),
+  INVALID_CSTR_SYNTAX(10326, "Invalid Constraint syntax"),
   ACID_NOT_ENOUGH_HISTORY(10327, "Not enough history available for ({0},{1}).  " +
     "Oldest available base: {2}", true),
   INVALID_COLUMN_NAME(10328, "Invalid column name"),
   UNSUPPORTED_SET_OPERATOR(10329, "Unsupported set operator"),
   LOCK_ACQUIRE_CANCELLED(10330, "Query was cancelled while acquiring locks on the underlying objects. "),
+  NOT_RECOGNIZED_CONSTRAINT(10331, "Constraint not recognized"),
+  INVALID_CONSTRAINT(10332, "Invalid constraint definition"),
   REPLACE_VIEW_WITH_MATERIALIZED(10400, "Attempt to replace view {0} with materialized view", true),
   REPLACE_MATERIALIZED_WITH_VIEW(10401, "Attempt to replace materialized view {0} with view", true),
   UPDATE_DELETE_VIEW(10402, "You cannot update or delete records in a view"),
@@ -465,9 +466,11 @@ public enum ErrorMsg {
     "requires \"AND <boolean>\" on the 1st WHEN MATCHED clause of <{0}>", true),
   MERGE_TOO_MANY_DELETE(10405, "MERGE statment can have at most 1 WHEN MATCHED ... DELETE clause: <{0}>", true),
   MERGE_TOO_MANY_UPDATE(10406, "MERGE statment can have at most 1 WHEN MATCHED ... UPDATE clause: <{0}>", true),
-  INVALID_JOIN_CONDITION(10407, "Error parsing condition in outer join"),
+  INVALID_JOIN_CONDITION(10407, "Error parsing condition in join"),
   INVALID_TARGET_COLUMN_IN_SET_CLAUSE(10408, "Target column \"{0}\" of set clause is not found in table \"{1}\".", true),
   HIVE_GROUPING_FUNCTION_EXPR_NOT_IN_GROUPBY(10409, "Expression in GROUPING function not present in GROUP BY"),
+  ALTER_TABLE_NON_PARTITIONED_TABLE_CASCADE_NOT_SUPPORTED(10410,
+      "Alter table with non-partitioned table does not support cascade"),
   //========================== 20000 range starts here ========================//
   SCRIPT_INIT_ERROR(20000, "Unable to initialize custom script."),
   SCRIPT_IO_ERROR(20001, "An error occurred while reading or writing to your custom script. "
@@ -481,9 +484,17 @@ public enum ErrorMsg {
       "is controlled by hive.exec.max.dynamic.partitions and hive.exec.max.dynamic.partitions.pernode. "),
   PARTITION_SCAN_LIMIT_EXCEEDED(20005, "Number of partitions scanned (={0}) on table {1} exceeds limit" +
       " (={2}). This is controlled by hive.limit.query.max.table.partition.", true),
-  OP_NOT_ALLOWED_IN_AUTOCOMMIT(20006, "Operation {0} is not allowed when autoCommit=true.", true),//todo: better SQLState?
-  OP_NOT_ALLOWED_IN_TXN(20007, "Operation {0} is not allowed in a transaction.  TransactionID={1}.", true),
-  OP_NOT_ALLOWED_WITHOUT_TXN(20008, "Operation {0} is not allowed since autoCommit=false and there is no active transaction", true),
+  /**
+   * {1} is the transaction id;
+   * use {@link org.apache.hadoop.hive.common.JavaUtils#txnIdToString(long)} to format
+   */
+  OP_NOT_ALLOWED_IN_IMPLICIT_TXN(20006, "Operation {0} is not allowed in an implicit transaction ({1}).", true),
+  /**
+   * {1} is the transaction id;
+   * use {@link org.apache.hadoop.hive.common.JavaUtils#txnIdToString(long)} to format
+   */
+  OP_NOT_ALLOWED_IN_TXN(20007, "Operation {0} is not allowed in a transaction ({1},queryId={2}).", true),
+  OP_NOT_ALLOWED_WITHOUT_TXN(20008, "Operation {0} is not allowed without an active transaction", true),
   //========================== 30000 range starts here ========================//
   STATSPUBLISHER_NOT_OBTAINED(30000, "StatsPublisher cannot be obtained. " +
     "There was a error to retrieve the StatsPublisher, and retrying " +

@@ -345,6 +345,7 @@ public class TezSessionState {
       String user, final Configuration conf) throws IOException {
     // TODO: parts of this should be moved out of TezSession to reuse the clients, but there's
     //       no good place for that right now (HIVE-13698).
+    // TODO: De-link from SessionState. A TezSession can be linked to different Hive Sessions via the pool.
     SessionState session = SessionState.get();
     boolean isInHs2 = session != null && session.isHiveServerQuery();
     Token<LlapTokenIdentifier> token = null;
@@ -438,6 +439,7 @@ public class TezSessionState {
   private void setupSessionAcls(Configuration tezConf, HiveConf hiveConf) throws
       IOException {
 
+    // TODO: De-link from SessionState. A TezSession can be linked to different Hive Sessions via the pool.
     String user = SessionState.getUserFromAuthenticator();
     UserGroupInformation loginUserUgi = UserGroupInformation.getLoginUser();
     String loginUser =
@@ -451,6 +453,7 @@ public class TezSessionState {
             TezConfiguration.TEZ_AM_MODIFY_ACLS, addHs2User, user, loginUser);
 
     if (LOG.isDebugEnabled()) {
+      // TODO: De-link from SessionState. A TezSession can be linked to different Hive Sessions via the pool.
       LOG.debug(
           "Setting Tez Session access for sessionId={} with viewAclString={}, modifyStr={}",
           SessionState.get().getSessionId(), viewStr, modifyStr);
@@ -473,9 +476,10 @@ public class TezSessionState {
       localizedResources.addAll(lrs);
     }
 
-    // these are local resources that are set through the mr "tmpjars" property
+    // these are local resources that are set through the mr "tmpjars" property; skip session files.
     List<LocalResource> handlerLr = utils.localizeTempFiles(dir, conf,
-      additionalFilesNotFromConf.toArray(new String[additionalFilesNotFromConf.size()]));
+      additionalFilesNotFromConf.toArray(new String[additionalFilesNotFromConf.size()]),
+      DagUtils.getTempFilesFromConf(conf));
 
     if (handlerLr != null) {
       localizedResources.addAll(handlerLr);
@@ -592,6 +596,7 @@ public class TezSessionState {
    */
   private Path createTezDir(String sessionId) throws IOException {
     // tez needs its own scratch dir (per session)
+    // TODO: De-link from SessionState. A TezSession can be linked to different Hive Sessions via the pool.
     Path tezDir = new Path(SessionState.get().getHdfsScratchDirURIString(), TEZ_DIR);
     tezDir = new Path(tezDir, sessionId);
     FileSystem fs = tezDir.getFileSystem(conf);

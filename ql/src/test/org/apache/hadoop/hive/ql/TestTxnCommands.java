@@ -18,7 +18,6 @@
 package org.apache.hadoop.hive.ql;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.output.StringBuilderWriter;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
@@ -33,6 +32,7 @@ import org.apache.hadoop.hive.metastore.txn.TxnDbUtil;
 import org.apache.hadoop.hive.metastore.txn.TxnStore;
 import org.apache.hadoop.hive.metastore.txn.TxnUtils;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
+import org.apache.hadoop.hive.ql.io.HiveInputFormat;
 import org.apache.hadoop.hive.ql.lockmgr.TestDbTxnManager2;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.processors.CommandProcessorResponse;
@@ -103,9 +103,9 @@ public class TestTxnCommands {
     hiveConf = new HiveConf(this.getClass());
     hiveConf.set(HiveConf.ConfVars.PREEXECHOOKS.varname, "");
     hiveConf.set(HiveConf.ConfVars.POSTEXECHOOKS.varname, "");
-    hiveConf.set(HiveConf.ConfVars.HIVE_SUPPORT_CONCURRENCY.varname, "false");
     hiveConf.set(HiveConf.ConfVars.METASTOREWAREHOUSE.varname, TEST_WAREHOUSE_DIR);
     hiveConf.setVar(HiveConf.ConfVars.HIVEMAPREDMODE, "nonstrict");
+    hiveConf.setVar(HiveConf.ConfVars.HIVEINPUTFORMAT, HiveInputFormat.class.getName());
     hiveConf
     .setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
         "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
@@ -138,7 +138,6 @@ public class TestTxnCommands {
   public void tearDown() throws Exception {
     try {
       if (d != null) {
-        runStatementOnDriver("set autocommit true");
         dropTables();
         d.destroy();
         d.close();
@@ -195,7 +194,6 @@ public class TestTxnCommands {
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) " + makeValuesClause(rows1));
     //List<String> rs = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     //Assert.assertEquals("Data didn't match in autocommit=true (rs)", stringifyValues(rows1), rs);
-    runStatementOnDriver("set autocommit false");
     runStatementOnDriver("START TRANSACTION");
     int[][] rows2 = {{5,6},{7,8}};
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) " + makeValuesClause(rows2));
@@ -207,8 +205,8 @@ public class TestTxnCommands {
     dumpTableData(Table.ACIDTBL, 1, 0);
     dumpTableData(Table.ACIDTBL, 2, 0);
     runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
-    runStatementOnDriver("COMMIT");//txn started implicitly by previous statement
-    runStatementOnDriver("set autocommit true");
+    CommandProcessorResponse cpr = runStatementOnDriverNegative("COMMIT");//txn started implicitly by previous statement
+    Assert.assertEquals("Error didn't match: " + cpr, ErrorMsg.OP_NOT_ALLOWED_WITHOUT_TXN.getErrorCode(), cpr.getErrorCode());
     List<String> rs1 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Data didn't match inside tx (rs0)", allData, rs1);
   }
@@ -219,43 +217,35 @@ public class TestTxnCommands {
    */
   @Test
   public void testErrors() throws Exception {
-    runStatementOnDriver("set autocommit true");
-    CommandProcessorResponse cpr = runStatementOnDriverNegative("start transaction");
-    Assert.assertEquals("Error didn't match: " + cpr, ErrorMsg.OP_NOT_ALLOWED_IN_AUTOCOMMIT.getErrorCode(), cpr.getErrorCode());
-    runStatementOnDriver("set autocommit false");
     runStatementOnDriver("start transaction");
     CommandProcessorResponse cpr2 = runStatementOnDriverNegative("create table foo(x int, y int)");
     Assert.assertEquals("Expected DDL to fail in an open txn", ErrorMsg.OP_NOT_ALLOWED_IN_TXN.getErrorCode(), cpr2.getErrorCode());
-    runStatementOnDriver("set autocommit true");
     CommandProcessorResponse cpr3 = runStatementOnDriverNegative("update " + Table.ACIDTBL + " set a = 1 where b != 1");
     Assert.assertEquals("Expected update of bucket column to fail",
       "FAILED: SemanticException [Error 10302]: Updating values of bucketing columns is not supported.  Column a.",
       cpr3.getErrorMessage());
-    //line below should in principle work but Driver doesn't propagate errorCode properly
-    //Assert.assertEquals("Expected update of bucket column to fail", ErrorMsg.UPDATE_CANNOT_UPDATE_BUCKET_VALUE.getErrorCode(), cpr3.getErrorCode());
-    cpr3 = runStatementOnDriverNegative("commit work");//not allowed in AC=true
-    Assert.assertEquals("Error didn't match: " + cpr3, ErrorMsg.OP_NOT_ALLOWED_IN_AUTOCOMMIT.getErrorCode(), cpr.getErrorCode());
-    cpr3 = runStatementOnDriverNegative("rollback work");//not allowed in AC=true
-    Assert.assertEquals("Error didn't match: " + cpr3, ErrorMsg.OP_NOT_ALLOWED_IN_AUTOCOMMIT.getErrorCode(), cpr.getErrorCode());
-    runStatementOnDriver("set autocommit false");
+    Assert.assertEquals("Expected update of bucket column to fail",
+      ErrorMsg.UPDATE_CANNOT_UPDATE_BUCKET_VALUE.getErrorCode(), cpr3.getErrorCode());
     cpr3 = runStatementOnDriverNegative("commit");//not allowed in w/o tx
-    Assert.assertEquals("Error didn't match: " + cpr3, ErrorMsg.OP_NOT_ALLOWED_IN_AUTOCOMMIT.getErrorCode(), cpr.getErrorCode());
+    Assert.assertEquals("Error didn't match: " + cpr3,
+      ErrorMsg.OP_NOT_ALLOWED_WITHOUT_TXN.getErrorCode(), cpr3.getErrorCode());
     cpr3 = runStatementOnDriverNegative("rollback");//not allowed in w/o tx
-    Assert.assertEquals("Error didn't match: " + cpr3, ErrorMsg.OP_NOT_ALLOWED_IN_AUTOCOMMIT.getErrorCode(), cpr.getErrorCode());
+    Assert.assertEquals("Error didn't match: " + cpr3,
+      ErrorMsg.OP_NOT_ALLOWED_WITHOUT_TXN.getErrorCode(), cpr3.getErrorCode());
     runStatementOnDriver("start transaction");
     cpr3 = runStatementOnDriverNegative("start transaction");//not allowed in a tx
-    Assert.assertEquals("Expected start transaction to fail", ErrorMsg.OP_NOT_ALLOWED_IN_TXN.getErrorCode(), cpr3.getErrorCode());
+    Assert.assertEquals("Expected start transaction to fail",
+      ErrorMsg.OP_NOT_ALLOWED_IN_TXN.getErrorCode(), cpr3.getErrorCode());
     runStatementOnDriver("start transaction");//ok since previously opened txn was killed
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) values(1,2)");
     List<String> rs0 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Can't see my own write", 1, rs0.size());
-    runStatementOnDriver("set autocommit true");//this should commit previous txn
+    runStatementOnDriver("commit work");
     rs0 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Can't see my own write", 1, rs0.size());
   }
   @Test
   public void testReadMyOwnInsert() throws Exception {
-    runStatementOnDriver("set autocommit false");
     runStatementOnDriver("START TRANSACTION");
     List<String> rs = runStatementOnDriver("select * from " + Table.ACIDTBL);
     Assert.assertEquals("Expected empty " + Table.ACIDTBL, 0, rs.size());
@@ -270,7 +260,6 @@ public class TestTxnCommands {
   }
   @Test
   public void testImplicitRollback() throws Exception {
-    runStatementOnDriver("set autocommit false");
     runStatementOnDriver("START TRANSACTION");
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) values(1,2)");
     List<String> rs0 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
@@ -287,18 +276,15 @@ public class TestTxnCommands {
   }
   @Test
   public void testExplicitRollback() throws Exception {
-    runStatementOnDriver("set autocommit false");
     runStatementOnDriver("START TRANSACTION");
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) values(1,2)");
     runStatementOnDriver("ROLLBACK");
-    runStatementOnDriver("set autocommit true");
     List<String> rs = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Rollback didn't rollback", 0, rs.size());
   }
 
   @Test
   public void testMultipleInserts() throws Exception {
-    runStatementOnDriver("set autocommit false");
     runStatementOnDriver("START TRANSACTION");
     int[][] rows1 = {{1,2},{3,4}};
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) " + makeValuesClause(rows1));
@@ -311,7 +297,6 @@ public class TestTxnCommands {
     runStatementOnDriver("commit");
     dumpTableData(Table.ACIDTBL, 1, 0);
     dumpTableData(Table.ACIDTBL, 1, 1);
-    runStatementOnDriver("set autocommit true");
     List<String> rs1 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Content didn't match after commit rs1", allData, rs1);
   }
@@ -321,14 +306,12 @@ public class TestTxnCommands {
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) " + makeValuesClause(rows1));
     List<String> rs0 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Content didn't match rs0", stringifyValues(rows1), rs0);
-    runStatementOnDriver("set autocommit false");
     runStatementOnDriver("START TRANSACTION");
     runStatementOnDriver("delete from " + Table.ACIDTBL + " where b = 4");
     int[][] updatedData2 = {{1,2}};
     List<String> rs3 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Wrong data after delete", stringifyValues(updatedData2), rs3);
     runStatementOnDriver("commit");
-    runStatementOnDriver("set autocommit true");
     List<String> rs4 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Wrong data after commit", stringifyValues(updatedData2), rs4);
   }
@@ -339,7 +322,6 @@ public class TestTxnCommands {
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) " + makeValuesClause(rows1));
     List<String> rs0 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Content didn't match rs0", stringifyValues(rows1), rs0);
-    runStatementOnDriver("set autocommit false");
     runStatementOnDriver("START TRANSACTION");
     int[][] rows2 = {{5,6},{7,8}};
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) " + makeValuesClause(rows2));
@@ -352,7 +334,6 @@ public class TestTxnCommands {
     List<String> rs2 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Wrong data after update", stringifyValues(updatedData), rs2);
     runStatementOnDriver("commit");
-    runStatementOnDriver("set autocommit true");
     List<String> rs4 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Wrong data after commit", stringifyValues(updatedData), rs4);
   }
@@ -362,7 +343,6 @@ public class TestTxnCommands {
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) " + makeValuesClause(rows1));
     List<String> rs0 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Content didn't match rs0", stringifyValues(rows1), rs0);
-    runStatementOnDriver("set autocommit false");
     runStatementOnDriver("START TRANSACTION");
     int[][] rows2 = {{5,6},{7,8}};
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) " + makeValuesClause(rows2));
@@ -383,7 +363,6 @@ public class TestTxnCommands {
     List<String> rs3 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Wrong data after delete", stringifyValues(updatedData2), rs3);
     runStatementOnDriver("commit");
-    runStatementOnDriver("set autocommit true");
     List<String> rs4 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Wrong data after commit", stringifyValues(updatedData2), rs4);
   }
@@ -393,7 +372,6 @@ public class TestTxnCommands {
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) " + makeValuesClause(rows1));
     List<String> rs0 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Content didn't match rs0", stringifyValues(rows1), rs0);
-    runStatementOnDriver("set autocommit false");
     runStatementOnDriver("START TRANSACTION");
     runStatementOnDriver("delete from " + Table.ACIDTBL + " where b = 8");
     int[][] updatedData2 = {{1,2},{3,4},{5,6}};
@@ -413,7 +391,6 @@ public class TestTxnCommands {
     int [][] updatedData4 = {{1,3},{5,3}};
     Assert.assertEquals("Wrong data after delete", stringifyValues(updatedData4), rs5);
     runStatementOnDriver("commit");
-    runStatementOnDriver("set autocommit true");
     List<String> rs4 = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
     Assert.assertEquals("Wrong data after commit", stringifyValues(updatedData4), rs4);
   }
@@ -434,7 +411,6 @@ public class TestTxnCommands {
   }
   @Test
   public void testTimeOutReaper() throws Exception {
-    runStatementOnDriver("set autocommit false");
     runStatementOnDriver("start transaction");
     runStatementOnDriver("delete from " + Table.ACIDTBL + " where a = 5");
     //make sure currently running txn is considered aborted by housekeeper
@@ -468,7 +444,7 @@ public class TestTxnCommands {
       }
     }
     Assert.assertNotNull(txnInfo);
-    Assert.assertEquals(2, txnInfo.getId());
+    Assert.assertEquals(12, txnInfo.getId());
     Assert.assertEquals(TxnState.OPEN, txnInfo.getState());
     String s =TxnDbUtil.queryToString("select TXN_STARTED, TXN_LAST_HEARTBEAT from TXNS where TXN_ID = " + txnInfo.getId(), false);
     String[] vals = s.split("\\s+");
@@ -517,53 +493,10 @@ public class TestTxnCommands {
    * sorts rows in dictionary order
    */
   private List<String> stringifyValues(int[][] rowsIn) {
-    assert rowsIn.length > 0;
-    int[][] rows = rowsIn.clone();
-    Arrays.sort(rows, new RowComp());
-    List<String> rs = new ArrayList<String>();
-    for(int[] row : rows) {
-      assert row.length > 0;
-      StringBuilder sb = new StringBuilder();
-      for(int value : row) {
-        sb.append(value).append("\t");
-      }
-      sb.setLength(sb.length() - 1);
-      rs.add(sb.toString());
-    }
-    return rs;
-  }
-  private static final class RowComp implements Comparator<int[]> {
-    @Override
-    public int compare(int[] row1, int[] row2) {
-      assert row1 != null && row2 != null && row1.length == row2.length;
-      for(int i = 0; i < row1.length; i++) {
-        int comp = Integer.compare(row1[i], row2[i]);
-        if(comp != 0) {
-          return comp;
-        }
-      }
-      return 0;
-    }
+    return TestTxnCommands2.stringifyValues(rowsIn);
   }
   private String makeValuesClause(int[][] rows) {
-    assert rows.length > 0;
-    StringBuilder sb = new StringBuilder("values");
-    for(int[] row : rows) {
-      assert row.length > 0;
-      if(row.length > 1) {
-        sb.append("(");
-      }
-      for(int value : row) {
-        sb.append(value).append(",");
-      }
-      sb.setLength(sb.length() - 1);//remove trailing comma
-      if(row.length > 1) {
-        sb.append(")");
-      }
-      sb.append(",");
-    }
-    sb.setLength(sb.length() - 1);//remove trailing comma
-    return sb.toString();
+    return TestTxnCommands2.makeValuesClause(rows);
   }
 
   private List<String> runStatementOnDriver(String stmt) throws Exception {
@@ -583,7 +516,6 @@ public class TestTxnCommands {
     throw new RuntimeException("Didn't get expected failure!");
   }
 
-//  @Ignore
   @Test
   public void exchangePartition() throws Exception {
     runStatementOnDriver("create database ex1");
@@ -781,9 +713,9 @@ public class TestTxnCommands {
     runStatementOnDriver("insert into " + Table.ACIDTBL + " " + makeValuesClause(vals));
     String query = "merge into " + Table.ACIDTBL +
       " as t using " + Table.NONACIDORCTBL + " s ON t.a = s.a " +
-      "WHEN MATCHED AND s.a < 3 THEN update set b = 0 " +
-      "WHEN MATCHED and t.a > 3 and t.a < 5 THEN DELETE " +
-      "WHEN NOT MATCHED THEN INSERT VALUES(s.a, s.b) ";
+      "WHEN MATCHED AND s.a < 3 THEN update set b = 0 " + //updates (2,1) -> (2,0)
+      "WHEN MATCHED and t.a > 3 and t.a < 5 THEN DELETE " +//deletes (4,3)
+      "WHEN NOT MATCHED THEN INSERT VALUES(s.a, s.b) ";//inserts (11,11)
     runStatementOnDriver(query);
 
     List<String> r = runStatementOnDriver("select a,b from " + Table.ACIDTBL + " order by a,b");
@@ -904,5 +836,56 @@ public class TestTxnCommands {
     runStatementOnDriver("create table merge_test (c1 integer, c2 integer, c3 integer) CLUSTERED BY (c1) into 2 buckets stored as orc tblproperties(\"transactional\"=\"true\")");
     runStatementOnDriver("create table if not exists e011_02 (c1 float, c2 double, c3 float)");
     runStatementOnDriver("merge into merge_test using e011_02 on (merge_test.c1 = e011_02.c1) when not matched then insert values (case when e011_02.c1 > 0 then e011_02.c1 + 1 else e011_02.c1 end, e011_02.c2 + e011_02.c3, coalesce(e011_02.c3, 1))");
+  }
+  /**
+   * HIVE-16177
+   * See also {@link TestTxnCommands2#testNonAcidToAcidConversion02()}
+   */
+  @Test
+  public void testNonAcidToAcidConversion01() throws Exception {
+    //create 1 row in a file 000001_0 (and an empty 000000_0)
+    runStatementOnDriver("insert into " + Table.NONACIDORCTBL + "(a,b) values(1,2)");
+    //create 1 row in a file 000000_0_copy1 and 1 row in a file 000001_0_copy1
+    runStatementOnDriver("insert into " + Table.NONACIDORCTBL + "(a,b) values(0,12),(1,5)");
+
+    //convert the table to Acid
+    runStatementOnDriver("alter table " + Table.NONACIDORCTBL + " SET TBLPROPERTIES ('transactional'='true')");
+    //create a delta directory
+    runStatementOnDriver("insert into " + Table.NONACIDORCTBL + "(a,b) values(1,17)");
+
+    //make sure we assign correct Ids
+    List<String> rs = runStatementOnDriver("select ROW__ID, a, b, INPUT__FILE__NAME from " +  Table.NONACIDORCTBL + " order by ROW__ID");
+    LOG.warn("before compact");
+    for(String s : rs) {
+      LOG.warn(s);
+    }
+    Assert.assertEquals("", 4, rs.size());
+    Assert.assertTrue(rs.get(0), rs.get(0).startsWith("{\"transactionid\":0,\"bucketid\":0,\"rowid\":0}\t0\t12"));
+    Assert.assertTrue(rs.get(0), rs.get(0).endsWith("nonacidorctbl/000000_0_copy_1"));
+    Assert.assertTrue(rs.get(1), rs.get(1).startsWith("{\"transactionid\":0,\"bucketid\":1,\"rowid\":0}\t1\t2"));
+    Assert.assertTrue(rs.get(1), rs.get(1).endsWith("nonacidorctbl/000001_0"));
+    Assert.assertTrue(rs.get(2), rs.get(2).startsWith("{\"transactionid\":0,\"bucketid\":1,\"rowid\":1}\t1\t5"));
+    Assert.assertTrue(rs.get(2), rs.get(2).endsWith("nonacidorctbl/000001_0_copy_1"));
+    Assert.assertTrue(rs.get(3), rs.get(3).startsWith("{\"transactionid\":14,\"bucketid\":536936448,\"rowid\":0}\t1\t17"));
+    Assert.assertTrue(rs.get(3), rs.get(3).endsWith("nonacidorctbl/000001_0_copy_1"));
+    //run Compaction
+    runStatementOnDriver("alter table "+ TestTxnCommands2.Table.NONACIDORCTBL +" compact 'major'");
+    TestTxnCommands2.runWorker(hiveConf);
+    rs = runStatementOnDriver("select ROW__ID, a, b, INPUT__FILE__NAME from " + Table.NONACIDORCTBL + " order by ROW__ID");
+    LOG.warn("after compact");
+    for(String s : rs) {
+      LOG.warn(s);
+    }
+    Assert.assertEquals("", 4, rs.size());
+    Assert.assertTrue(rs.get(0), rs.get(0).startsWith("{\"transactionid\":0,\"bucketid\":0,\"rowid\":0}\t0\t12"));
+    Assert.assertTrue(rs.get(0), rs.get(0).endsWith("nonacidorctbl/base_0000014/bucket_00000"));
+    Assert.assertTrue(rs.get(1), rs.get(1).startsWith("{\"transactionid\":0,\"bucketid\":1,\"rowid\":0}\t1\t2"));
+    Assert.assertTrue(rs.get(1), rs.get(1).endsWith("nonacidorctbl/base_0000014/bucket_00001"));
+    Assert.assertTrue(rs.get(2), rs.get(2).startsWith("{\"transactionid\":0,\"bucketid\":1,\"rowid\":1}\t1\t5"));
+    Assert.assertTrue(rs.get(2), rs.get(2).endsWith("nonacidorctbl/base_0000014/bucket_00001"));
+    Assert.assertTrue(rs.get(3), rs.get(3).startsWith("{\"transactionid\":14,\"bucketid\":536936448,\"rowid\":0}\t1\t17"));
+    Assert.assertTrue(rs.get(3), rs.get(3).endsWith("nonacidorctbl/base_0000014/bucket_00001"));
+
+    //make sure they are the same before and after compaction
   }
 }

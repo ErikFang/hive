@@ -24,6 +24,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
+
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.WordUtils;
@@ -52,6 +53,8 @@ import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.Order;
 import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
 import org.apache.hadoop.hive.ql.Context;
+import org.apache.hadoop.hive.ql.Driver.DriverState;
+import org.apache.hadoop.hive.ql.Driver.LockedDriverState;
 import org.apache.hadoop.hive.ql.ErrorMsg;
 import org.apache.hadoop.hive.ql.QueryPlan;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator.RecordWriter;
@@ -142,6 +145,8 @@ import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.mapred.SequenceFileInputFormat;
 import org.apache.hadoop.mapred.SequenceFileOutputFormat;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hive.common.util.ACLConfigurationParser;
 import org.apache.hive.common.util.ReflectionUtil;
@@ -535,7 +540,7 @@ public final class Utilities {
   public static void setMapRedWork(Configuration conf, MapredWork w, Path hiveScratchDir) {
     String useName = conf.get(INPUT_NAME);
     if (useName == null) {
-      useName = "mapreduce";
+      useName = "mapreduce:" + hiveScratchDir;
     }
     conf.set(INPUT_NAME, useName);
     setMapWork(conf, w.getMapWork(), hiveScratchDir, true);
@@ -1200,7 +1205,7 @@ public final class Utilities {
    * Group 6: copy     [copy keyword]
    * Group 8: 2        [copy file index]
    */
-  private static final String COPY_KEYWORD = "_copy_"; // copy keyword
+  public static final String COPY_KEYWORD = "_copy_"; // copy keyword
   private static final Pattern COPY_FILE_NAME_TO_TASK_ID_REGEX =
       Pattern.compile("^.*?"+ // any prefix
                       "([0-9]+)"+ // taskId
@@ -2024,7 +2029,7 @@ public final class Utilities {
    * @param job
    *          configuration which receives configured properties
    */
-  public static void copyTableJobPropertiesToConf(TableDesc tbl, Configuration job) {
+  public static void copyTableJobPropertiesToConf(TableDesc tbl, JobConf job) throws HiveException {
     Properties tblProperties = tbl.getProperties();
     for(String name: tblProperties.stringPropertyNames()) {
       if (job.get(name) == null) {
@@ -2035,11 +2040,23 @@ public final class Utilities {
       }
     }
     Map<String, String> jobProperties = tbl.getJobProperties();
-    if (jobProperties == null) {
-      return;
+    if (jobProperties != null) {
+      for (Map.Entry<String, String> entry : jobProperties.entrySet()) {
+        job.set(entry.getKey(), entry.getValue());
+      }
     }
-    for (Map.Entry<String, String> entry : jobProperties.entrySet()) {
-      job.set(entry.getKey(), entry.getValue());
+
+    try {
+      Map<String, String> jobSecrets = tbl.getJobSecrets();
+      if (jobSecrets != null) {
+        for (Map.Entry<String, String> entry : jobSecrets.entrySet()) {
+          job.getCredentials().addSecretKey(new Text(entry.getKey()), entry.getValue().getBytes());
+          UserGroupInformation.getCurrentUser().getCredentials()
+            .addSecretKey(new Text(entry.getKey()), entry.getValue().getBytes());
+        }
+      }
+    } catch (IOException e) {
+      throw new HiveException(e);
     }
   }
 
@@ -2052,7 +2069,7 @@ public final class Utilities {
    * @param tbl
    * @param job
    */
-  public static void copyTablePropertiesToConf(TableDesc tbl, JobConf job) {
+  public static void copyTablePropertiesToConf(TableDesc tbl, JobConf job) throws HiveException {
     Properties tblProperties = tbl.getProperties();
     for(String name: tblProperties.stringPropertyNames()) {
       String val = (String) tblProperties.get(name);
@@ -2061,11 +2078,23 @@ public final class Utilities {
       }
     }
     Map<String, String> jobProperties = tbl.getJobProperties();
-    if (jobProperties == null) {
-      return;
+    if (jobProperties != null) {
+      for (Map.Entry<String, String> entry : jobProperties.entrySet()) {
+        job.set(entry.getKey(), entry.getValue());
+      }
     }
-    for (Map.Entry<String, String> entry : jobProperties.entrySet()) {
-      job.set(entry.getKey(), entry.getValue());
+
+    try {
+      Map<String, String> jobSecrets = tbl.getJobSecrets();
+      if (jobSecrets != null) {
+        for (Map.Entry<String, String> entry : jobSecrets.entrySet()) {
+          job.getCredentials().addSecretKey(new Text(entry.getKey()), entry.getValue().getBytes());
+          UserGroupInformation.getCurrentUser().getCredentials()
+            .addSecretKey(new Text(entry.getKey()), entry.getValue().getBytes());
+        }
+      }
+    } catch (IOException e) {
+      throw new HiveException(e);
     }
   }
 
@@ -3018,6 +3047,7 @@ public final class Utilities {
 
     Set<Path> pathsProcessed = new HashSet<Path>();
     List<Path> pathsToAdd = new LinkedList<Path>();
+    LockedDriverState lDrvStat = LockedDriverState.getLockedDriverState();
     // AliasToWork contains all the aliases
     for (String alias : work.getAliasToWork().keySet()) {
       LOG.info("Processing alias " + alias);
@@ -3027,6 +3057,9 @@ public final class Utilities {
       boolean hasLogged = false;
       // Note: this copies the list because createDummyFileForEmptyPartition may modify the map.
       for (Path file : new LinkedList<Path>(work.getPathToAliases().keySet())) {
+        if (lDrvStat != null && lDrvStat.driverState == DriverState.INTERRUPT)
+          throw new IOException("Operation is Canceled. ");
+
         List<String> aliases = work.getPathToAliases().get(file);
         if (aliases.contains(alias)) {
           if (file != null) {
@@ -3077,18 +3110,30 @@ public final class Utilities {
     }
 
     List<Path> finalPathsToAdd = new LinkedList<>();
-    List<Future<Path>> futures = new LinkedList<>();
+    Map<GetInputPathsCallable, Future<Path>> getPathsCallableToFuture = new LinkedHashMap<>();
     for (final Path path : pathsToAdd) {
+      if (lDrvStat != null && lDrvStat.driverState == DriverState.INTERRUPT) {
+        throw new IOException("Operation is Canceled. ");
+      }
       if (pool == null) {
-        finalPathsToAdd.add(new GetInputPathsCallable(path, job, work, hiveScratchDir, ctx, skipDummy).call());
+        Path newPath = new GetInputPathsCallable(path, job, work, hiveScratchDir, ctx, skipDummy).call();
+        updatePathForMapWork(newPath, work, path);
+        finalPathsToAdd.add(newPath);
       } else {
-        futures.add(pool.submit(new GetInputPathsCallable(path, job, work, hiveScratchDir, ctx, skipDummy)));
+        GetInputPathsCallable callable = new GetInputPathsCallable(path, job, work, hiveScratchDir, ctx, skipDummy);
+        getPathsCallableToFuture.put(callable, pool.submit(callable));
       }
     }
 
     if (pool != null) {
-      for (Future<Path> future : futures) {
-        finalPathsToAdd.add(future.get());
+      for (Map.Entry<GetInputPathsCallable, Future<Path>> future : getPathsCallableToFuture.entrySet()) {
+        if (lDrvStat != null && lDrvStat.driverState == DriverState.INTERRUPT) {
+          throw new IOException("Operation is Canceled. ");
+        }
+
+        Path newPath = future.getValue().get();
+        updatePathForMapWork(newPath, work, future.getKey().path);
+        finalPathsToAdd.add(newPath);
       }
     }
 
@@ -3117,7 +3162,8 @@ public final class Utilities {
     @Override
     public Path call() throws Exception {
       if (!this.skipDummy && isEmptyPath(this.job, this.path, this.ctx)) {
-        return createDummyFileForEmptyPartition(this.path, this.job, this.work, this.hiveScratchDir);
+        return createDummyFileForEmptyPartition(this.path, this.job, this.work.getPathToPartitionInfo().get(this.path),
+                this.hiveScratchDir);
       }
       return this.path;
     }
@@ -3155,14 +3201,12 @@ public final class Utilities {
   }
 
   @SuppressWarnings("rawtypes")
-  private static Path createDummyFileForEmptyPartition(Path path, JobConf job, MapWork work,
-      Path hiveScratchDir)
-          throws Exception {
+  private static Path createDummyFileForEmptyPartition(Path path, JobConf job, PartitionDesc partDesc,
+                                                       Path hiveScratchDir) throws Exception {
 
     String strPath = path.toString();
 
     // The input file does not exist, replace it by a empty file
-    PartitionDesc partDesc = work.getPathToPartitionInfo().get(path);
     if (partDesc.getTableDesc().isNonNative()) {
       // if this isn't a hive table we can't create an empty file for it.
       return path;
@@ -3179,16 +3223,19 @@ public final class Utilities {
     if (LOG.isInfoEnabled()) {
       LOG.info("Changed input file " + strPath + " to empty file " + newPath + " (" + oneRow + ")");
     }
-
-    // update the work
-
-    work.addPathToAlias(newPath, work.getPathToAliases().get(path));
-    work.removePathToAlias(path);
-
-    work.removePathToPartitionInfo(path);
-    work.addPathToPartitionInfo(newPath, partDesc);
-
     return newPath;
+  }
+
+  private static void updatePathForMapWork(Path newPath, MapWork work, Path path) {
+    // update the work
+    if (!newPath.equals(path)) {
+      PartitionDesc partDesc = work.getPathToPartitionInfo().get(path);
+      work.addPathToAlias(newPath, work.getPathToAliases().get(path));
+      work.removePathToAlias(path);
+
+      work.removePathToPartitionInfo(path);
+      work.addPathToPartitionInfo(newPath, partDesc);
+    }
   }
 
   @SuppressWarnings("rawtypes")
@@ -3735,59 +3782,6 @@ public final class Utilities {
     StandardStructObjectInspector rowObjectInspector = ObjectInspectorFactory.getStandardStructObjectInspector(colNames, ois);
 
     return rowObjectInspector;
-  }
-
-  /**
-   * Check if LLAP IO supports the column type that is being read
-   * @param conf - configuration
-   * @return false for types not supported by vectorization, true otherwise
-   */
-  public static boolean checkVectorizerSupportedTypes(final Configuration conf) {
-    final String[] readColumnNames = ColumnProjectionUtils.getReadColumnNames(conf);
-    final String columnNames = conf.get(serdeConstants.LIST_COLUMNS);
-    final String columnTypes = conf.get(serdeConstants.LIST_COLUMN_TYPES);
-    if (columnNames == null || columnTypes == null || columnNames.isEmpty() ||
-        columnTypes.isEmpty()) {
-      LOG.warn("Column names ({}) or types ({}) is null. Skipping type checking for LLAP IO.",
-          columnNames, columnTypes);
-      return true;
-    }
-    final List<String> allColumnNames = Lists.newArrayList(columnNames.split(","));
-    final List<TypeInfo> typeInfos = TypeInfoUtils.getTypeInfosFromTypeString(columnTypes);
-    final List<String> allColumnTypes = TypeInfoUtils.getTypeStringsFromTypeInfo(typeInfos);
-    return checkVectorizerSupportedTypes(Lists.newArrayList(readColumnNames), allColumnNames,
-        allColumnTypes);
-  }
-
-  /**
-   * Check if LLAP IO supports the column type that is being read
-   * @param readColumnNames - columns that will be read from the table/partition
-   * @param allColumnNames - all columns
-   * @param allColumnTypes - all column types
-   * @return false for types not supported by vectorization, true otherwise
-   */
-  public static boolean checkVectorizerSupportedTypes(final List<String> readColumnNames,
-      final List<String> allColumnNames, final List<String> allColumnTypes) {
-    final String[] readColumnTypes = getReadColumnTypes(readColumnNames, allColumnNames,
-        allColumnTypes);
-
-    if (readColumnTypes != null) {
-      for (String readColumnType : readColumnTypes) {
-        if (readColumnType != null) {
-          if (!Vectorizer.validateDataType(readColumnType,
-              VectorExpressionDescriptor.Mode.PROJECTION)) {
-            LOG.warn("Unsupported column type encountered ({}). Disabling LLAP IO.",
-                readColumnType);
-            return false;
-          }
-        }
-      }
-    } else {
-      LOG.warn("readColumnTypes is null. Skipping type checking for LLAP IO. " +
-          "readColumnNames: {} allColumnNames: {} allColumnTypes: {} readColumnTypes: {}",
-          readColumnNames, allColumnNames, allColumnTypes, readColumnTypes);
-    }
-    return true;
   }
 
   private static String[] getReadColumnTypes(final List<String> readColumnNames,

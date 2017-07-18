@@ -132,21 +132,23 @@ STAGE PLANS:
                       native: true
                       projectedOutputColumns: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
                   Select Operator
-                    expressions: bo (type: boolean), b (type: bigint)
-                    outputColumnNames: bo, b
+                    expressions: b (type: bigint), bo (type: boolean)
+                    outputColumnNames: b, bo
                     Select Vectorization:
                         className: VectorSelectOperator
                         native: true
-                        projectedOutputColumns: [7, 3]
+                        projectedOutputColumns: [3, 7]
                     Statistics: Num rows: 2000 Data size: 918712 Basic stats: COMPLETE Column stats: NONE
                     Group By Operator
                       aggregations: max(b)
                       Group By Vectorization:
                           aggregators: VectorUDAFMaxLong(col 3) -> bigint
                           className: VectorGroupByOperator
+                          groupByMode: HASH
                           vectorOutput: true
                           keyExpressions: col 7
                           native: false
+                          vectorProcessingMode: HASH
                           projectedOutputColumns: [0]
                       keys: bo (type: boolean)
                       mode: hash
@@ -157,10 +159,9 @@ STAGE PLANS:
                         sort order: +
                         Map-reduce partition columns: _col0 (type: boolean)
                         Reduce Sink Vectorization:
-                            className: VectorReduceSinkOperator
-                            native: false
-                            nativeConditionsMet: hive.vectorized.execution.reducesink.new.enabled IS true, hive.execution.engine spark IN [tez, spark] IS true, No buckets IS true, No TopN IS true, No DISTINCT columns IS true, BinarySortableSerDe for keys IS true, LazyBinarySerDe for values IS true
-                            nativeConditionsNotMet: Uniform Hash IS false
+                            className: VectorReduceSinkObjectHashOperator
+                            native: true
+                            nativeConditionsMet: hive.vectorized.execution.reducesink.new.enabled IS true, hive.execution.engine spark IN [tez, spark] IS true, No PTF TopN IS true, No DISTINCT columns IS true, BinarySortableSerDe for keys IS true, LazyBinarySerDe for values IS true
                         Statistics: Num rows: 2000 Data size: 918712 Basic stats: COMPLETE Column stats: NONE
                         value expressions: _col1 (type: bigint)
             Execution mode: vectorized
@@ -187,9 +188,11 @@ STAGE PLANS:
                 Group By Vectorization:
                     aggregators: VectorUDAFMaxLong(col 1) -> bigint
                     className: VectorGroupByOperator
+                    groupByMode: MERGEPARTIAL
                     vectorOutput: true
                     keyExpressions: col 0
                     native: false
+                    vectorProcessingMode: MERGE_PARTIAL
                     projectedOutputColumns: [0]
                 keys: KEY._col0 (type: boolean)
                 mode: mergepartial
@@ -199,10 +202,9 @@ STAGE PLANS:
                   key expressions: _col0 (type: boolean)
                   sort order: -
                   Reduce Sink Vectorization:
-                      className: VectorReduceSinkOperator
-                      native: false
-                      nativeConditionsMet: hive.vectorized.execution.reducesink.new.enabled IS true, hive.execution.engine spark IN [tez, spark] IS true, No buckets IS true, No TopN IS true, No DISTINCT columns IS true, BinarySortableSerDe for keys IS true, LazyBinarySerDe for values IS true
-                      nativeConditionsNotMet: Uniform Hash IS false
+                      className: VectorReduceSinkObjectHashOperator
+                      native: true
+                      nativeConditionsMet: hive.vectorized.execution.reducesink.new.enabled IS true, hive.execution.engine spark IN [tez, spark] IS true, No PTF TopN IS true, No DISTINCT columns IS true, BinarySortableSerDe for keys IS true, LazyBinarySerDe for values IS true
                   Statistics: Num rows: 1000 Data size: 459356 Basic stats: COMPLETE Column stats: NONE
                   value expressions: _col1 (type: bigint)
         Reducer 3 

@@ -21,7 +21,6 @@ import java.math.BigDecimal;
 import java.sql.Date;
 import java.sql.Timestamp;
 import java.util.ArrayList;
-import java.util.Calendar;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
@@ -43,6 +42,9 @@ import org.apache.calcite.rex.RexWindow;
 import org.apache.calcite.rex.RexWindowBound;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.type.SqlTypeUtil;
+import org.apache.calcite.util.DateString;
+import org.apache.calcite.util.TimeString;
+import org.apache.calcite.util.TimestampString;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.HiveIntervalDayTime;
 import org.apache.hadoop.hive.common.type.HiveIntervalYearMonth;
@@ -293,15 +295,13 @@ public class ExprNodeConverter extends RexVisitorImpl<ExprNodeDesc> {
             Double.valueOf(((Number) literal.getValue3()).doubleValue()));
       case DATE:
         return new ExprNodeConstantDesc(TypeInfoFactory.dateTypeInfo,
-          new Date(((Calendar)literal.getValue()).getTimeInMillis()));
+            Date.valueOf(literal.getValueAs(DateString.class).toString()));
       case TIME:
-      case TIMESTAMP: {
-        Object value = literal.getValue3();
-        if (value instanceof Long) {
-          value = new Timestamp((Long)value);
-        }
-        return new ExprNodeConstantDesc(TypeInfoFactory.timestampTypeInfo, value);
-      }
+        return new ExprNodeConstantDesc(TypeInfoFactory.timestampTypeInfo,
+            Timestamp.valueOf(literal.getValueAs(TimeString.class).toString()));
+      case TIMESTAMP:
+        return new ExprNodeConstantDesc(TypeInfoFactory.timestampTypeInfo,
+            Timestamp.valueOf(literal.getValueAs(TimestampString.class).toString()));
       case BINARY:
         return new ExprNodeConstantDesc(TypeInfoFactory.binaryTypeInfo, literal.getValue3());
       case DECIMAL:
