@@ -42,7 +42,6 @@ import org.apache.hadoop.hive.ql.exec.ObjectCache;
 import org.apache.hadoop.hive.ql.exec.ObjectCacheFactory;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.OperatorUtils;
-import org.apache.hadoop.hive.ql.exec.TezDummyStoreOperator;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.exec.mr.ExecMapper.ReportStats;
 import org.apache.hadoop.hive.ql.exec.mr.ExecMapperContext;
@@ -154,7 +153,6 @@ public class MapRecordProcessor extends RecordProcessor {
       mapOp.setExecContext(execContext);
 
       connectOps.clear();
-      boolean fromCache = false;
       if (mergeWorkList != null) {
         MapOperator mergeMapOp = null;
         for (BaseWork mergeWork : mergeWorkList) {
@@ -172,41 +170,10 @@ public class MapRecordProcessor extends RecordProcessor {
             l4j.info("Input name is " + mergeMapWork.getName());
             jconf.set(Utilities.INPUT_NAME, mergeMapWork.getName());
             mergeMapOp.initialize(jconf, null);
-            // if there are no files/partitions to read, we need to skip trying to read
-            MultiMRInput multiMRInput = multiMRInputMap.get(mergeMapWork.getName());
-            boolean skipRead = false;
-            if (multiMRInput == null) {
-              l4j.info("Multi MR Input for work " + mergeMapWork.getName() + " is null. Skipping read.");
-              skipRead = true;
-            } else {
-              Collection<KeyValueReader> keyValueReaders = multiMRInput.getKeyValueReaders();
-              if ((keyValueReaders == null) || (keyValueReaders.isEmpty())) {
-                l4j.info("Key value readers are null or empty and hence skipping read. "
-                    + "KeyValueReaders = " + keyValueReaders);
-                skipRead = true;
-              }
-            }
-            if (skipRead) {
-              List<Operator<?>> children = new ArrayList<Operator<?>>();
-              children.addAll(mergeMapOp.getConf().getAliasToWork().values());
-              // do the same thing as setChildren when there is nothing to read.
-              // the setChildren method initializes the object inspector needed by the operators
-              // based on path and partition information which we don't have in this case.
-              mergeMapOp.initEmptyInputChildren(children, jconf);
-            } else {
-              // the setChildren method initializes the object inspector needed by the operators
-              // based on path and partition information.
-              mergeMapOp.setChildren(jconf);
-            }
-            Operator<? extends OperatorDesc> finalOp = getFinalOp(mergeMapOp);
-            if (finalOp instanceof TezDummyStoreOperator) {
-              // we ensure that we don't try to read any data in case of skip read.
-              ((TezDummyStoreOperator) finalOp).setFetchDone(skipRead);
-              connectOps.put(mergeMapWork.getTag(), (DummyStoreOperator) finalOp);
-            } else {
-              // found the plan is already connected which means this is derived from the cache.
-              fromCache = true;
-            }
+            mergeMapOp.setChildren(jconf);
+
+            DummyStoreOperator dummyOp = getJoinParentOp(mergeMapOp);
+            connectOps.put(mergeMapWork.getTag(), dummyOp);
 
             mergeMapOp.passExecContext(new ExecMapperContext(jconf));
             mergeMapOp.initializeLocalWork(jconf);
@@ -214,9 +181,7 @@ public class MapRecordProcessor extends RecordProcessor {
         }
       }
 
-      if (!fromCache) {
-        ((TezContext) (MapredContext.get())).setDummyOpsMap(connectOps);
-      }
+      ((TezContext) (MapredContext.get())).setDummyOpsMap(connectOps);
 
       // initialize map operator
       mapOp.setConf(mapWork);
@@ -287,10 +252,8 @@ public class MapRecordProcessor extends RecordProcessor {
       MultiMRInput multiMRInput = multiMRInputMap.get(inputName);
       Collection<KeyValueReader> kvReaders = multiMRInput.getKeyValueReaders();
       l4j.debug("There are " + kvReaders.size() + " key-value readers for input " + inputName);
-      if (kvReaders.size() > 0) {
-        reader = getKeyValueReader(kvReaders, mapOp);
-        sources[tag].init(jconf, mapOp, reader);
-      }
+      reader = getKeyValueReader(kvReaders, mapOp);
+      sources[tag].init(jconf, mapOp, reader);
     }
     ((TezContext) MapredContext.get()).setRecordSources(sources);
   }
@@ -311,12 +274,12 @@ public class MapRecordProcessor extends RecordProcessor {
     return reader;
   }
 
-  private Operator<? extends OperatorDesc> getFinalOp(Operator<? extends OperatorDesc> mergeMapOp) {
+  private DummyStoreOperator getJoinParentOp(Operator<? extends OperatorDesc> mergeMapOp) {
     for (Operator<? extends OperatorDesc> childOp : mergeMapOp.getChildOperators()) {
       if ((childOp.getChildOperators() == null) || (childOp.getChildOperators().isEmpty())) {
-        return childOp;
+        return (DummyStoreOperator) childOp;
       } else {
-        return getFinalOp(childOp);
+        return getJoinParentOp(childOp);
       }
     }
     return null;
