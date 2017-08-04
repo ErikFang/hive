@@ -161,19 +161,25 @@ public class HiveConf extends Configuration {
       result = checkConfigFile(new File(confPath, name));
       if (result == null) {
         String homePath = System.getenv("HIVE_HOME");
-        String nameInConf = "conf" + File.pathSeparator + name;
+        String nameInConf = "conf" + File.separator + name;
         result = checkConfigFile(new File(homePath, nameInConf));
         if (result == null) {
           URI jarUri = null;
           try {
-            jarUri = HiveConf.class.getProtectionDomain().getCodeSource().getLocation().toURI();
+            // Handle both file:// and jar:<url>!{entry} in the case of shaded hive libs
+            URL sourceUrl = HiveConf.class.getProtectionDomain().getCodeSource().getLocation();
+            jarUri = sourceUrl.getProtocol().equalsIgnoreCase("jar") ? new URI(sourceUrl.getPath()) : sourceUrl.toURI();
           } catch (Throwable e) {
             if (l4j.isInfoEnabled()) {
               l4j.info("Cannot get jar URI", e);
             }
             System.err.println("Cannot get jar URI: " + e.getMessage());
           }
-          result = checkConfigFile(new File(new File(jarUri).getParentFile(), nameInConf));
+          // From the jar file, the parent is /lib folder
+          File parent = new File(jarUri).getParentFile();
+          if (parent != null) {
+            result = checkConfigFile(new File(parent.getParentFile(), nameInConf));
+          }
         }
       }
     }
@@ -559,6 +565,8 @@ public class HiveConf extends Configuration {
         "operation log directory will not be removed, so they can be found after the test runs."),
 
     HIVE_IN_TEZ_TEST("hive.in.tez.test", false, "internal use only, true when in testing tez",
+        true),
+    HIVE_MAPJOIN_TESTING_NO_HASH_TABLE_LOAD("hive.mapjoin.testing.no.hash.table.load", false, "internal use only, true when in testing map join",
         true),
 
     LOCALMODEAUTO("hive.exec.mode.local.auto", false,
@@ -1601,6 +1609,10 @@ public class HiveConf extends Configuration {
         "Reduce deduplication merges two RSs by moving key/parts/reducer-num of the child RS to parent RS. \n" +
         "That means if reducer-num of the child RS is fixed (order by or forced bucketing) and small, it can make very slow, single MR.\n" +
         "The optimization will be automatically disabled if number of reducers would be less than specified value."),
+    HIVEOPTJOINREDUCEDEDUPLICATION("hive.optimize.joinreducededuplication", true,
+        "Remove extra shuffle/sorting operations after join algorithm selection has been executed. \n" +
+        "Currently it only works with Apache Tez. This should always be set to true. \n" +
+        "Since it is a new feature, it has been made configurable."),
 
     HIVEOPTSORTDYNAMICPARTITION("hive.optimize.sort.dynamic.partition", false,
         "When enabled dynamic partitioning column will be globally sorted.\n" +
@@ -1725,7 +1737,9 @@ public class HiveConf extends Configuration {
         "Whether column accesses are tracked in the QueryPlan.\n" +
         "This is useful to identify how tables are accessed and to determine if there are wasted columns that can be trimmed."),
     HIVE_STATS_NDV_ALGO("hive.stats.ndv.algo", "hll", new PatternSet("hll", "fm"),
-            "hll and fm stand for HyperLogLog and FM-sketch, respectively for computing ndv."), 
+        "hll and fm stand for HyperLogLog and FM-sketch, respectively for computing ndv."), 
+    HIVE_STATS_FETCH_BITVECTOR("hive.stats.fetch.bitvector", false,
+        "Whether we fetch bitvector when we compute ndv. Users can turn it off if they want to use old schema"),
     // standard error allowed for ndv estimates for FM-sketch. A lower value indicates higher accuracy and a
     // higher compute cost.
     HIVE_STATS_NDV_ERROR("hive.stats.ndv.error", (float)20.0,
@@ -2242,7 +2256,8 @@ public class HiveConf extends Configuration {
 
     HIVE_LOG_EXPLAIN_OUTPUT("hive.log.explain.output", false,
         "Whether to log explain output for every query.\n" +
-        "When enabled, will log EXPLAIN EXTENDED output for the query at INFO log4j log level."),
+        "When enabled, will log EXPLAIN EXTENDED output for the query at INFO log4j log level\n" +
+        "and in WebUI / Drilldown / Show Query."),
     HIVE_EXPLAIN_USER("hive.explain.user", true,
         "Whether to show explain result at user level.\n" +
         "When enabled, will log EXPLAIN output for the query at user level. Tez only."),
@@ -2830,15 +2845,23 @@ public class HiveConf extends Configuration {
     HIVE_VECTORIZATION_USE_VECTOR_DESERIALIZE("hive.vectorized.use.vector.serde.deserialize", true,
         "This flag should be set to true to enable vectorizing rows using vector deserialize.\n" +
         "The default value is true."),
-    HIVE_VECTORIZATION_USE_ROW_DESERIALIZE("hive.vectorized.use.row.serde.deserialize", false,
+    HIVE_VECTORIZATION_USE_ROW_DESERIALIZE("hive.vectorized.use.row.serde.deserialize", true,
         "This flag should be set to true to enable vectorizing using row deserialize.\n" +
         "The default value is false."),
+    HIVE_VECTORIZATION_ROW_DESERIALIZE_INPUTFORMAT_EXCLUDES(
+        "hive.vectorized.row.serde.inputformat.excludes",
+        "org.apache.parquet.hadoop.ParquetInputFormat,org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
+        "The input formats not supported by row deserialize vectorization."),
     HIVE_VECTOR_ADAPTOR_USAGE_MODE("hive.vectorized.adaptor.usage.mode", "all", new StringSet("none", "chosen", "all"),
         "Specifies the extent to which the VectorUDFAdaptor will be used for UDFs that do not have a cooresponding vectorized class.\n" +
         "0. none   : disable any usage of VectorUDFAdaptor\n" +
         "1. chosen : use VectorUDFAdaptor for a small set of UDFs that were choosen for good performance\n" +
         "2. all    : use VectorUDFAdaptor for all UDFs"
     ),
+    HIVE_VECTORIZATION_PTF_ENABLED("hive.vectorized.execution.ptf.enabled", false,
+        "This flag should be set to true to enable vectorized mode of the PTF of query execution.\n" +
+        "The default value is false."),
+
     HIVE_VECTORIZATION_COMPLEX_TYPES_ENABLED("hive.vectorized.complex.types.enabled", true,
         "This flag should be set to true to enable vectorization\n" +
         "of expressions with complex types.\n" +
@@ -2848,6 +2871,10 @@ public class HiveConf extends Configuration {
         "of aggregations that use complex types.\n",
         "For example, AVG uses a complex type (STRUCT) for partial aggregation results" +
         "The default value is true."),
+    HIVE_VECTORIZATION_ROW_IDENTIFIER_ENABLED("hive.vectorized.row.identifier.enabled", false,
+        "This flag should be set to true to enable vectorization\n" +
+        "of ROW__ID.\n" +
+        "The default value is false."),
 
     HIVE_TYPE_CHECK_ON_INSERT("hive.typecheck.on.insert", true, "This property has been extended to control "
         + "whether to check, convert, and normalize partition value to conform to its column type in "
@@ -2976,6 +3003,11 @@ public class HiveConf extends Configuration {
         -1f, "The customized fraction of JVM memory which Tez will reserve for the processor"),
     // The default is different on the client and server, so it's null here.
     LLAP_IO_ENABLED("hive.llap.io.enabled", null, "Whether the LLAP IO layer is enabled."),
+    LLAP_IO_TRACE_SIZE("hive.llap.io.trace.size", "2Mb",
+        new SizeValidator(0L, true, (long)Integer.MAX_VALUE, false),
+        "The buffer size for a per-fragment LLAP debug trace. 0 to disable."),
+    LLAP_IO_TRACE_ALWAYS_DUMP("hive.llap.io.trace.always.dump", false,
+        "Whether to always dump the LLAP IO trace (if enabled); the default is on error."),
     LLAP_IO_NONVECTOR_WRAPPER_ENABLED("hive.llap.io.nonvector.wrapper.enabled", true,
         "Whether the LLAP IO layer is enabled for non-vectorized queries that read inputs\n" +
         "that can be vectorized"),
@@ -3394,6 +3426,10 @@ public class HiveConf extends Configuration {
     SPARK_DYNAMIC_PARTITION_PRUNING_MAX_DATA_SIZE(
         "hive.spark.dynamic.partition.pruning.max.data.size", 100*1024*1024L,
         "Maximum total data size in dynamic pruning."),
+    SPARK_DYNAMIC_PARTITION_PRUNING_MAP_JOIN_ONLY(
+        "hive.spark.dynamic.partition.pruning.map.join.only", false,
+        "Turn on dynamic partition pruning only for map joins.\n" +
+        "If hive.spark.dynamic.partition.pruning is set to true, this parameter value is ignored."),
     SPARK_USE_GROUPBY_SHUFFLE(
         "hive.spark.use.groupby.shuffle", true,
         "Spark groupByKey transformation has better performance but uses unbounded memory." +
@@ -3484,6 +3520,11 @@ public class HiveConf extends Configuration {
 
     HIVE_EXEC_INPUT_LISTING_MAX_THREADS("hive.exec.input.listing.max.threads", 0, new  SizeValidator(0L, true, 1024L, true),
         "Maximum number of threads that Hive uses to list file information from file systems (recommended > 1 for blobstore)."),
+
+    HIVE_EXEC_MOVE_FILES_FROM_SOURCE_DIR("hive.exec.move.files.from.source.dir", false,
+        "When moving/renaming a directory from source to destination, individually move each \n" +
+        "file in the source directory, rather than renaming the source directory. This may \n" +
+        "help protect against files written to temp directories by runaway task attempts."),
 
     /* BLOBSTORE section */
 
@@ -4011,6 +4052,17 @@ public class HiveConf extends Configuration {
   public static void setBoolVar(Configuration conf, ConfVars var, boolean val) {
     assert (var.valClass == Boolean.class) : var.varname;
     conf.setBoolean(var.varname, val);
+  }
+
+  /* Dynamic partition pruning is enabled in some or all cases if either
+   * hive.spark.dynamic.partition.pruning is true or
+   * hive.spark.dynamic.partition.pruning.map.join.only is true
+   */
+  public static boolean isSparkDPPAny(Configuration conf) {
+    return (conf.getBoolean(ConfVars.SPARK_DYNAMIC_PARTITION_PRUNING.varname,
+            ConfVars.SPARK_DYNAMIC_PARTITION_PRUNING.defaultBoolVal) ||
+            conf.getBoolean(ConfVars.SPARK_DYNAMIC_PARTITION_PRUNING_MAP_JOIN_ONLY.varname,
+            ConfVars.SPARK_DYNAMIC_PARTITION_PRUNING_MAP_JOIN_ONLY.defaultBoolVal));
   }
 
   public boolean getBoolVar(ConfVars var) {
@@ -4626,6 +4678,20 @@ public class HiveConf extends Configuration {
     return isWebUiEnabled() && this.getIntVar(ConfVars.HIVE_SERVER2_WEBUI_MAX_HISTORIC_QUERIES) > 0;
   }
 
+  /* Dynamic partition pruning is enabled in some or all cases
+   */
+  public boolean isSparkDPPAny() {
+    return isSparkDPPAny(this);
+  }
+
+  /* Dynamic partition pruning is enabled only for map join
+   * hive.spark.dynamic.partition.pruning is false and
+   * hive.spark.dynamic.partition.pruning.map.join.only is true
+   */
+  public boolean isSparkDPPOnlyMapjoin() {
+    return (!this.getBoolVar(ConfVars.SPARK_DYNAMIC_PARTITION_PRUNING) &&
+            this.getBoolVar(ConfVars.SPARK_DYNAMIC_PARTITION_PRUNING_MAP_JOIN_ONLY));
+  }
 
   public static boolean isLoadMetastoreConfig() {
     return loadMetastoreConfig;

@@ -40,6 +40,8 @@ import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.Timer;
@@ -275,6 +277,17 @@ public class HiveMetaStore extends ThriftHiveMetastore {
           }
         };
 
+    /**
+     * Thread local HMSHandler used during shutdown to notify meta listeners
+     */
+    private static final ThreadLocal<HMSHandler> threadLocalHMSHandler = new ThreadLocal<>();
+
+    /**
+     * Thread local Map to keep track of modified meta conf keys
+     */
+    private static final ThreadLocal<Map<String, String>> threadLocalModifiedConfig =
+        new ThreadLocal<>();
+
     private static ExecutorService threadPool;
 
     public static final String AUDIT_FORMAT =
@@ -343,6 +356,55 @@ public class HiveMetaStore extends ThriftHiveMetastore {
         return null;
       }
     };
+
+    /**
+     * Internal function to notify listeners for meta config change events
+     */
+    private void notifyMetaListeners(String key, String oldValue, String newValue) throws MetaException {
+      for (MetaStoreEventListener listener : listeners) {
+        listener.onConfigChange(new ConfigChangeEvent(this, key, oldValue, newValue));
+      }
+
+      if (transactionalListeners.size() > 0) {
+        // All the fields of this event are final, so no reason to create a new one for each
+        // listener
+        ConfigChangeEvent cce = new ConfigChangeEvent(this, key, oldValue, newValue);
+        for (MetaStoreEventListener transactionalListener : transactionalListeners) {
+          transactionalListener.onConfigChange(cce);
+        }
+      }
+    }
+
+    /**
+     * Internal function to notify listeners to revert back to old values of keys
+     * that were modified during setMetaConf. This would get called from HiveMetaStore#cleanupRawStore
+     */
+    private void notifyMetaListenersOnShutDown() {
+      Map<String, String> modifiedConf = threadLocalModifiedConfig.get();
+      if (modifiedConf == null) {
+        // Nothing got modified
+        return;
+      }
+      try {
+        Configuration conf = threadLocalConf.get();
+        if (conf == null) {
+          throw new MetaException("Unexpected: modifiedConf is non-null but conf is null");
+        }
+        // Notify listeners of the changed value
+        for (Entry<String, String> entry : modifiedConf.entrySet()) {
+          String key = entry.getKey();
+          // curr value becomes old and vice-versa
+          String currVal = entry.getValue();
+          String oldVal = conf.get(key);
+          if (!Objects.equals(oldVal, currVal)) {
+            notifyMetaListeners(key, oldVal, currVal);
+          }
+        }
+        logInfo("Meta listeners shutdown notification completed.");
+      } catch (MetaException e) {
+        LOG.error("Failed to notify meta listeners on shutdown: ", e);
+      }
+    }
 
     public static void setThreadLocalIpAddress(String ipAddress) {
       threadLocalIpAddress.set(ipAddress);
@@ -513,6 +575,14 @@ public class HiveMetaStore extends ThriftHiveMetastore {
       return threadLocalId.get() + ": " + s;
     }
 
+    /**
+     * Set copy of invoking HMSHandler on thread local
+     */
+    private static void setHMSHandler(HMSHandler handler) {
+      if (threadLocalHMSHandler.get() == null) {
+        threadLocalHMSHandler.set(handler);
+      }
+    }
     @Override
     public void setConf(Configuration conf) {
       threadLocalConf.set(conf);
@@ -532,6 +602,15 @@ public class HiveMetaStore extends ThriftHiveMetastore {
       return conf;
     }
 
+    private Map<String, String> getModifiedConf() {
+      Map<String, String> modifiedConf = threadLocalModifiedConfig.get();
+      if (modifiedConf == null) {
+        modifiedConf = new HashMap<String, String>();
+        threadLocalModifiedConfig.set(modifiedConf);
+      }
+      return modifiedConf;
+    }
+
     public Warehouse getWh() {
       return wh;
     }
@@ -549,20 +628,16 @@ public class HiveMetaStore extends ThriftHiveMetastore {
       }
       Configuration configuration = getConf();
       String oldValue = configuration.get(key);
+      // Save prev val of the key on threadLocal
+      Map<String, String> modifiedConf = getModifiedConf();
+      if (!modifiedConf.containsKey(key)) {
+        modifiedConf.put(key, oldValue);
+      }
+      // Set invoking HMSHandler on threadLocal, this will be used later to notify
+      // metaListeners in HiveMetaStore#cleanupRawStore
+      setHMSHandler(this);
       configuration.set(key, value);
-
-      for (MetaStoreEventListener listener : listeners) {
-        listener.onConfigChange(new ConfigChangeEvent(this, key, oldValue, value));
-      }
-
-      if (transactionalListeners.size() > 0) {
-        // All the fields of this event are final, so no reason to create a new one for each
-        // listener
-        ConfigChangeEvent cce = new ConfigChangeEvent(this, key, oldValue, value);
-        for (MetaStoreEventListener transactionalListener : transactionalListeners) {
-          transactionalListener.onConfigChange(cce);
-        }
-      }
+      notifyMetaListeners(key, oldValue, value);
     }
 
     @Override
@@ -908,7 +983,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.CREATE_DATABASE,
                                                 new CreateDatabaseEvent(db, success, this),
                                                 null,
-                                                transactionalListenersResponses);
+                                                transactionalListenersResponses, ms);
         }
       }
     }
@@ -1140,7 +1215,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.DROP_DATABASE,
                                                 new DropDatabaseEvent(db, success, this),
                                                 null,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
         }
       }
     }
@@ -1491,7 +1566,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.CREATE_TABLE,
                                                 new CreateTableEvent(tbl, success, this),
                                                 envContext,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
         }
       }
     }
@@ -1790,7 +1865,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.DROP_TABLE,
                                                 new DropTableEvent(tbl, deleteData, success, this),
                                                 envContext,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
         }
       }
       return success;
@@ -2445,7 +2520,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.ADD_PARTITION,
                                                 new AddPartitionEvent(tbl, part, success, this),
                                                 envContext,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
         }
       }
       return part;
@@ -2700,7 +2775,8 @@ public class HiveMetaStore extends ThriftHiveMetastore {
           if (!listeners.isEmpty()) {
             MetaStoreListenerNotifier.notifyEvent(listeners,
                                                   EventType.ADD_PARTITION,
-                                                  new AddPartitionEvent(tbl, parts, false, this));
+                                                  new AddPartitionEvent(tbl, parts, false, this),
+                                                  null, null, ms);
           }
         } else {
           if (!listeners.isEmpty()) {
@@ -2708,13 +2784,14 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                   EventType.ADD_PARTITION,
                                                   new AddPartitionEvent(tbl, newParts, true, this),
                                                   null,
-                                                  transactionalListenerResponses);
+                                                  transactionalListenerResponses, ms);
 
             if (!existingParts.isEmpty()) {
               // The request has succeeded but we failed to add these partitions.
               MetaStoreListenerNotifier.notifyEvent(listeners,
                                                     EventType.ADD_PARTITION,
-                                                    new AddPartitionEvent(tbl, existingParts, false, this));
+                                                    new AddPartitionEvent(tbl, existingParts, false, this),
+                                                    null, null, ms);
             }
           }
         }
@@ -2902,7 +2979,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.ADD_PARTITION,
                                                 new AddPartitionEvent(tbl, partitionSpecProxy, true, this),
                                                 null,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
         }
       }
     }
@@ -3056,7 +3133,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.ADD_PARTITION,
                                                 new AddPartitionEvent(tbl, Arrays.asList(part), success, this),
                                                 envContext,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
 
         }
       }
@@ -3210,7 +3287,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.ADD_PARTITION,
                                                 addPartitionEvent,
                                                 null,
-                                                transactionalListenerResponsesForAddPartition);
+                                                transactionalListenerResponsesForAddPartition, ms);
 
           i = 0;
           for (Partition partition : partitionsToExchange) {
@@ -3225,7 +3302,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                   EventType.DROP_PARTITION,
                                                   dropPartitionEvent,
                                                   null,
-                                                  parameters);
+                                                  parameters, ms);
             i++;
           }
         }
@@ -3312,7 +3389,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.DROP_PARTITION,
                                                 new DropPartitionEvent(tbl, part, success, deleteData, this),
                                                 envContext,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
         }
       }
       return true;
@@ -3505,7 +3582,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                     EventType.DROP_PARTITION,
                                                     new DropPartitionEvent(tbl, part, success, deleteData, this),
                                                     envContext,
-                                                    parameters);
+                                                    parameters, ms);
 
               i++;
             }
@@ -4097,7 +4174,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.ALTER_INDEX,
                                                 new AlterIndexEvent(oldIndex, newIndex, success, this),
                                                 null,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
         }
       }
     }
@@ -4800,7 +4877,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.CREATE_INDEX,
                                                 new AddIndexEvent(index, success, this),
                                                 null,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
         }
       }
     }
@@ -4893,7 +4970,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.DROP_INDEX,
                                                 new DropIndexEvent(index, success, this),
                                                 null,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
         }
       }
       return success;
@@ -6364,7 +6441,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.CREATE_FUNCTION,
                                                 new CreateFunctionEvent(func, success, this),
                                                 null,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
         }
       }
     }
@@ -6415,7 +6492,7 @@ public class HiveMetaStore extends ThriftHiveMetastore {
                                                 EventType.DROP_FUNCTION,
                                                 new DropFunctionEvent(func, success, this),
                                                 null,
-                                                transactionalListenerResponses);
+                                                transactionalListenerResponses, ms);
         }
       }
     }
@@ -7509,15 +7586,21 @@ public class HiveMetaStore extends ThriftHiveMetastore {
   }
 
   private static void cleanupRawStore() {
-    RawStore rs = HMSHandler.getRawStore();
-    if (rs != null) {
-      HMSHandler.logInfo("Cleaning up thread local RawStore...");
-      try {
+    try {
+      RawStore rs = HMSHandler.getRawStore();
+      if (rs != null) {
+        HMSHandler.logInfo("Cleaning up thread local RawStore...");
         rs.shutdown();
-      } finally {
-        HMSHandler.threadLocalConf.remove();
-        HMSHandler.removeRawStore();
       }
+    } finally {
+      HMSHandler handler = HMSHandler.threadLocalHMSHandler.get();
+      if (handler != null) {
+        handler.notifyMetaListenersOnShutDown();
+      }
+      HMSHandler.threadLocalHMSHandler.remove();
+      HMSHandler.threadLocalConf.remove();
+      HMSHandler.threadLocalModifiedConfig.remove();
+      HMSHandler.removeRawStore();
       HMSHandler.logInfo("Done cleaning up thread local RawStore");
     }
   }
